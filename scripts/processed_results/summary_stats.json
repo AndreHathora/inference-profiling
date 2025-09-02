@@ -1,0 +1,18 @@
+{
+  "overall_stats": {
+    "total_experiments": 4,
+    "engines_tested": [
+      "vllm"
+    ],
+    "models_tested": [
+      "microsoft/DialoGPT-small"
+    ]
+  },
+  "vllm_stats": {
+    "avg_ttft": 0.011841829499189771,
+    "avg_throughput": 978.2286572997091,
+    "avg_gpu_memory": 73886.5,
+    "max_throughput": 1466.4391451723593,
+    "min_ttft": 0.0027958369992120424
+  }
+}
