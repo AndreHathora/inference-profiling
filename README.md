@@ -9,7 +9,7 @@
 ## Key Inference Phases to Analyze
 
 ### 1. **Input Processing & Tokenization**
-   - Text → token conversion time
+   - Text -> token conversion time
    - Input validation overhead
    - Tensor preparation for GPU
 
@@ -29,7 +29,7 @@
    - Sampling strategy overhead
 
 ### 5. **Output Processing**
-   - Token → text detokenization
+   - Token -> text detokenization
    - Stop sequence detection
    - Output formatting/cleanup
    - Streaming buffer management

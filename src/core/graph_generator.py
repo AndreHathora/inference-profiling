@@ -213,45 +213,45 @@ def generate_all_plots(df: pd.DataFrame, output_dir: str = './plots'):
 
     try:
         create_latency_comparison_plot(df, output_dir)
-        print("✓ Latency comparison plot created")
+        print("Latency comparison plot created")
     except Exception as e:
-        print(f"✗ Latency comparison plot failed: {e}")
+        print(f"Latency comparison plot failed: {e}")
 
     try:
         create_throughput_comparison_plot(df, output_dir)
-        print("✓ Throughput comparison plot created")
+        print("Throughput comparison plot created")
     except Exception as e:
-        print(f"✗ Throughput comparison plot failed: {e}")
+        print(f"Throughput comparison plot failed: {e}")
 
     try:
         create_memory_usage_plot(df, output_dir)
-        print("✓ Memory usage plot created")
+        print("Memory usage plot created")
     except Exception as e:
-        print(f"✗ Memory usage plot failed: {e}")
+        print(f"Memory usage plot failed: {e}")
 
     try:
         create_length_vs_latency_plot(df, output_dir)
-        print("✓ Length vs latency plot created")
+        print("Length vs latency plot created")
     except Exception as e:
-        print(f"✗ Length vs latency plot failed: {e}")
+        print(f"Length vs latency plot failed: {e}")
 
     try:
         create_concurrent_performance_plot(df, output_dir)
-        print("✓ Concurrent performance plot created")
+        print("Concurrent performance plot created")
     except Exception as e:
-        print(f"✗ Concurrent performance plot failed: {e}")
+        print(f"Concurrent performance plot failed: {e}")
 
     try:
         create_resource_utilization_plot(df, output_dir)
-        print("✓ Resource utilization plot created")
+        print("Resource utilization plot created")
     except Exception as e:
-        print(f"✗ Resource utilization plot failed: {e}")
+        print(f"Resource utilization plot failed: {e}")
 
     try:
         create_phase_breakdown_plot(df, output_dir)
-        print("✓ Phase breakdown plots created")
+        print("Phase breakdown plots created")
     except Exception as e:
-        print(f"✗ Phase breakdown plots failed: {e}")
+        print(f"Phase breakdown plots failed: {e}")
 
     print(f"\nAll plots saved to {output_path}")
 

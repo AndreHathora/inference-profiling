@@ -4,6 +4,6 @@ LLM inference engines for benchmarking.
 
 from .vllm.benchmark_vllm import VLLMBenchmark
 from .sglang.benchmark_sglang import SGLangBenchmark
-from .mlc.benchmark_mlc import MLCBenchmark
+from .transformers.benchmark_transformers import TransformersBenchmark
 
-__all__ = ['VLLMBenchmark', 'SGLangBenchmark', 'MLCBenchmark']
+__all__ = ['VLLMBenchmark', 'SGLangBenchmark', 'TransformersBenchmark']

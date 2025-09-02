@@ -1,17 +1,93 @@
 import asyncio
 import time
+import os
 from typing import List, Dict, Any
 from vllm import LLM, SamplingParams
 from src.core.benchmark_core import BaseBenchmark, InferenceMetrics, PhaseMetrics
+import torch
+from transformers import AutoConfig
+
+
+def calculate_optimal_gpu_memory_utilization(model_name: str) -> float:
+    """
+    Calculate optimal GPU memory utilization based on model size.
+    Returns a fraction between 0.05 and 0.9 representing what portion of GPU memory to use.
+    """
+    try:
+        # Get model configuration to determine size
+        config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+        
+        # Estimate model size based on parameters
+        if hasattr(config, 'n_parameters'):
+            # Some configs have explicit parameter count
+            num_params = config.n_parameters
+        else:
+            # Calculate based on common attributes
+            vocab_size = getattr(config, 'vocab_size', 50257)
+            hidden_size = getattr(config, 'hidden_size', getattr(config, 'd_model', 768))
+            num_layers = getattr(config, 'num_hidden_layers', getattr(config, 'n_layer', 12))
+            
+            # Rough estimation of parameters
+            # Embedding layer: vocab_size * hidden_size
+            # Each transformer layer: ~4 * hidden_size^2 (attention + feedforward)
+            # Final layer norm and output head
+            embedding_params = vocab_size * hidden_size
+            layer_params = num_layers * 4 * hidden_size * hidden_size
+            output_params = hidden_size * vocab_size
+            
+            num_params = embedding_params + layer_params + output_params
+        
+        # Convert parameters to approximate memory requirements
+        # Assume fp16 (2 bytes per parameter) + some overhead for activations
+        model_memory_gb = (num_params * 2) / (1024**3)  # Convert to GB
+        
+        # Get available GPU memory
+        if torch.cuda.is_available():
+            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        else:
+            gpu_memory_gb = 80  # Default assumption for H100
+        
+        # Calculate memory utilization based on model size
+        if model_memory_gb < 1:  # Very small models (< 1GB)
+            memory_util = 0.05  # Use minimal memory for KV cache
+        elif model_memory_gb < 3:  # Small models (1-3GB)
+            memory_util = 0.1   # Use 10% for KV cache
+        elif model_memory_gb < 7:  # Medium models (3-7GB)
+            memory_util = 0.2   # Use 20% for KV cache
+        elif model_memory_gb < 15:  # Large models (7-15GB)
+            memory_util = 0.4   # Use 40% for KV cache
+        elif model_memory_gb < 30:  # Very large models (15-30GB)
+            memory_util = 0.6   # Use 60% for KV cache
+        else:  # Huge models (>30GB)
+            memory_util = 0.8   # Use 80% for KV cache
+        
+        print(f"📊 Model analysis for {model_name}:")
+        print(f"   Estimated parameters: {num_params:,}")
+        print(f"   Estimated model memory: {model_memory_gb:.2f} GB")
+        print(f"   Available GPU memory: {gpu_memory_gb:.2f} GB")
+        print(f"   Optimal GPU memory utilization: {memory_util:.1%}")
+        
+        return memory_util
+        
+    except Exception as e:
+        print(f"⚠️ Could not analyze model {model_name}: {e}")
+        print(f"   Using conservative default: 10%")
+        return 0.1  # Conservative default
 
 
 class VLLMBenchmark(BaseBenchmark):
     def __init__(self, model_name: str, tensor_parallel_size: int = 1, max_model_len: int = None,
-                 gpu_memory_utilization: float = 0.9, max_tokens: int = 100):
+                 gpu_memory_utilization: float = None, max_tokens: int = 100):
         super().__init__(model_name, max_tokens)
         self.tensor_parallel_size = tensor_parallel_size
         self.max_model_len = max_model_len
-        self.gpu_memory_utilization = gpu_memory_utilization
+        
+        # Use dynamic memory allocation if not specified
+        if gpu_memory_utilization is None:
+            self.gpu_memory_utilization = calculate_optimal_gpu_memory_utilization(model_name)
+        else:
+            self.gpu_memory_utilization = gpu_memory_utilization
+            
         self.llm = None
         self.sampling_params = SamplingParams(
             temperature=0.1,
@@ -23,11 +99,17 @@ class VLLMBenchmark(BaseBenchmark):
     def run_warmup(self, prompt: str, num_warmup: int = 3):
         if self.llm is None:
             with self.measure_phase('model_loading'):
+                # Ensure SM_90 environment is set for vLLM
+                os.environ['TORCH_CUDA_ARCH_LIST'] = '9.0'
+                os.environ['PATH'] = '/usr/local/cuda-12.8/bin:' + os.environ.get('PATH', '')
+                os.environ['CUDA_HOME'] = '/usr/local/cuda-12.8'
+                
                 llm_kwargs = {
                     'model': self.model_name,
                     'tensor_parallel_size': self.tensor_parallel_size,
                     'gpu_memory_utilization': self.gpu_memory_utilization,
-                    'trust_remote_code': True
+                    'trust_remote_code': True,
+                    'enforce_eager': True
                 }
                 if self.max_model_len is not None:
                     llm_kwargs['max_model_len'] = self.max_model_len
@@ -39,6 +121,11 @@ class VLLMBenchmark(BaseBenchmark):
 
     def run_inference(self, prompt: str) -> tuple[str, float]:
         start_time = time.perf_counter()
+
+        # Ensure model is loaded
+        if self.llm is None:
+            print("Model not loaded, initializing...")
+            self.run_warmup(prompt)
 
         outputs = self.llm.generate([prompt], self.sampling_params)
 
@@ -162,6 +249,37 @@ class VLLMBenchmark(BaseBenchmark):
                 })
 
         return results
+
+    def run_concurrent_benchmark(self, prompts: List[str], concurrency: int = 4) -> List[Dict[str, Any]]:
+        """Run concurrent benchmark with vLLM."""
+        print(f"Running vLLM concurrent benchmark with {len(prompts)} prompts, concurrency: {concurrency}")
+
+        results = []
+        for i, prompt in enumerate(prompts):
+            print(f"Processing prompt {i+1}/{len(prompts)}")
+            output, latency = self.run_inference(prompt)
+            result = {
+                "output": output,
+                "latency": latency,
+                "batch_index": i % concurrency,
+                "prompt": prompt
+            }
+            results.append(result)
+            print(f"Prompt {i+1} completed with latency {latency:.4f}s")
+
+        print(f"vLLM concurrent benchmark completed with {len(results)} results")
+        return results
+
+    def cleanup(self):
+        """Clean up vLLM resources."""
+        try:
+            if self.llm is not None:
+                # Try to shutdown gracefully
+                if hasattr(self.llm, 'shutdown'):
+                    self.llm.shutdown()
+                self.llm = None
+        except Exception as e:
+            print(f"Warning: Error during vLLM cleanup: {e}")
 
     def get_engine_info(self) -> Dict[str, Any]:
         """Get information about the vLLM engine configuration."""

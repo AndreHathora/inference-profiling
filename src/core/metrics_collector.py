@@ -57,10 +57,76 @@ def parse_inference_metrics_string(metrics_str):
 def extract_metrics(results: Dict[str, Any]) -> pd.DataFrame:
     rows = []
     for result_name, result_data in results.items():
-        engine = 'vllm' if 'vllm' in result_name else 'sglang' if 'sglang' in result_name else 'comparison'
+        if 'vllm' in result_name:
+            engine = 'vllm'
+        elif 'sglang' in result_name:
+            engine = 'sglang'
+        elif 'mlc' in result_name:
+            engine = 'mlc'
+        elif 'transformers' in result_name:
+            engine = 'transformers'
+        elif 'comparison' in result_name:
+            continue  # Skip comparison results as they are not individual engine results
+        else:
+            engine = 'unknown'
         model = result_data.get('model', 'unknown')
         if model == 'unknown' and 'standard' in result_data:
             model = result_data['standard'].get('model', 'unknown')
+        # Handle overall metrics directly
+        if 'overall_metrics' in result_data:
+            metrics_str = result_data['overall_metrics']
+            if isinstance(metrics_str, str):
+                metrics = parse_inference_metrics_string(metrics_str)
+            else:
+                metrics = metrics_str
+
+            rows.append({
+                'engine': engine,
+                'model': model,
+                'result_type': 'overall',
+                'ttft': metrics.get('ttft', 0),
+                'tpot': metrics.get('tpot', 0),
+                'throughput': metrics.get('throughput', 0),
+                'total_tokens': metrics.get('total_tokens', 0),
+                'input_tokens': metrics.get('input_tokens', 0),
+                'output_tokens': metrics.get('output_tokens', 0),
+                'p50_latency': metrics.get('p50_latency', 0),
+                'p95_latency': metrics.get('p95_latency', 0),
+                'p99_latency': metrics.get('p99_latency', 0),
+                'gpu_memory_used': metrics.get('gpu_memory_used', 0),
+                'gpu_utilization': metrics.get('gpu_utilization', 0),
+                'cpu_utilization': metrics.get('cpu_utilization', 0)
+            })
+
+        # Handle individual run metrics
+        if 'metrics' in result_data and isinstance(result_data['metrics'], list):
+            for i, metrics_item in enumerate(result_data['metrics']):
+                if isinstance(metrics_item, str):
+                    metrics = parse_inference_metrics_string(metrics_item)
+                elif isinstance(metrics_item, dict):
+                    metrics = metrics_item
+                else:
+                    continue
+
+                rows.append({
+                    'engine': engine,
+                    'model': model,
+                    'result_type': f'run_{i}',
+                    'ttft': metrics.get('ttft', 0),
+                    'tpot': metrics.get('tpot', 0),
+                    'throughput': metrics.get('throughput', 0),
+                    'total_tokens': metrics.get('total_tokens', 0),
+                    'input_tokens': metrics.get('input_tokens', 0),
+                    'output_tokens': metrics.get('output_tokens', 0),
+                    'p50_latency': metrics.get('p50_latency', 0),
+                    'p95_latency': metrics.get('p95_latency', 0),
+                    'p99_latency': metrics.get('p99_latency', 0),
+                    'gpu_memory_used': metrics.get('gpu_memory_used', 0),
+                    'gpu_utilization': metrics.get('gpu_utilization', 0),
+                    'cpu_utilization': metrics.get('cpu_utilization', 0)
+                })
+
+        # Handle legacy format
         if 'standard' in result_data and 'overall_metrics' in result_data['standard']:
             metrics = result_data['standard']['overall_metrics']
             rows.append({
@@ -82,23 +148,44 @@ def extract_metrics(results: Dict[str, Any]) -> pd.DataFrame:
             })
         if 'comparison' in result_data:
             for eng, comp_data in result_data['comparison'].items():
-                rows.append({
-                    'engine': eng,
-                    'model': model,
-                    'result_type': 'comparison',
-                    'ttft': comp_data.get('ttft', 0),
-                    'throughput': comp_data.get('throughput', 0),
-                    'gpu_memory': comp_data.get('gpu_memory', 0),
-                    'tpot': 0,
-                    'total_tokens': 0,
-                    'input_tokens': 0,
-                    'output_tokens': 0,
-                    'p50_latency': 0,
-                    'p95_latency': 0,
-                    'p99_latency': 0,
-                    'gpu_utilization': 0,
-                    'cpu_utilization': 0
-                })
+                if comp_data.get('status') == 'failed':
+                    # Handle failed comparisons
+                    rows.append({
+                        'engine': eng,
+                        'model': model,
+                        'result_type': 'comparison',
+                        'ttft': 0,
+                        'throughput': 0,
+                        'gpu_memory_used': 0,
+                        'tpot': 0,
+                        'total_tokens': 0,
+                        'input_tokens': 0,
+                        'output_tokens': 0,
+                        'p50_latency': 0,
+                        'p95_latency': 0,
+                        'p99_latency': 0,
+                        'gpu_utilization': 0,
+                        'cpu_utilization': 0
+                    })
+                else:
+                    # Handle successful comparisons
+                    rows.append({
+                        'engine': eng,
+                        'model': model,
+                        'result_type': 'comparison',
+                        'ttft': comp_data.get('latency', 0),
+                        'throughput': comp_data.get('throughput', 0),
+                        'gpu_memory_used': comp_data.get('gpu_memory_used', 0),
+                        'tpot': 0,
+                        'total_tokens': comp_data.get('output_length', 0),
+                        'input_tokens': 0,
+                        'output_tokens': 0,
+                        'p50_latency': 0,
+                        'p95_latency': 0,
+                        'p99_latency': 0,
+                        'gpu_utilization': 0,
+                        'cpu_utilization': 0
+                    })
         if 'length_analysis' in result_data and isinstance(result_data['length_analysis'], list):
             for length_data in result_data['length_analysis']:
                 if isinstance(length_data, dict) and 'metrics' in length_data:
