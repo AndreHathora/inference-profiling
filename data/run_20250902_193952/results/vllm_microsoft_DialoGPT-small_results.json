@@ -1,0 +1,32 @@
+{
+  "model": "microsoft/DialoGPT-small",
+  "phases": {},
+  "metrics": [
+    "InferenceMetrics(ttft=0.02280783699825406, tpot=0.03008201099873986, throughput=343.5054037366783, total_tokens=31, input_tokens=23, output_tokens=8, p50_latency=0.0336355569997977, p95_latency=0.03380263899816782, p99_latency=0.03380263899816782, gpu_memory_used=5583.0, gpu_utilization=28.999999999999996, cpu_utilization=0.7)",
+    "InferenceMetrics(ttft=0.028826331999880495, tpot=0.03096633266613935, throughput=333.69574126653004, total_tokens=31, input_tokens=22, output_tokens=9, p50_latency=0.028826331999880495, p95_latency=0.037235320000036154, p99_latency=0.037235320000036154, gpu_memory_used=5583.0, gpu_utilization=11.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.009064685000339523, tpot=0.006871631000346194, throughput=1309.7327256871881, total_tokens=27, input_tokens=27, output_tokens=0, p50_latency=0.006640873001742875, p95_latency=0.009064685000339523, p99_latency=0.009064685000339523, gpu_memory_used=5583.0, gpu_utilization=0.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.010287666998920031, tpot=0.006664629331983936, throughput=1500.4585404336638, total_tokens=30, input_tokens=30, output_tokens=0, p50_latency=0.004998258998966776, p95_latency=0.010287666998920031, p99_latency=0.010287666998920031, gpu_memory_used=5583.0, gpu_utilization=3.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.00941448099911213, tpot=0.006571608665884317, throughput=1420.25093213267, total_tokens=28, input_tokens=28, output_tokens=0, p50_latency=0.005459052998048719, p95_latency=0.00941448099911213, p99_latency=0.00941448099911213, gpu_memory_used=5583.0, gpu_utilization=0.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.007554661002359353, tpot=0.00590454499979387, throughput=1806.517973364424, total_tokens=32, input_tokens=32, output_tokens=0, p50_latency=0.005387245997553691, p95_latency=0.007554661002359353, p99_latency=0.007554661002359353, gpu_memory_used=5583.0, gpu_utilization=2.0, cpu_utilization=0.4)",
+    "InferenceMetrics(ttft=0.032218030999501934, tpot=0.03205558633271721, throughput=374.3497272346668, total_tokens=36, input_tokens=29, output_tokens=7, p50_latency=0.032218030999501934, p95_latency=0.03398246899814694, p99_latency=0.03398246899814694, gpu_memory_used=5583.0, gpu_utilization=13.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.03223140200134367, tpot=0.03063246966727699, throughput=457.0313837592874, total_tokens=42, input_tokens=33, output_tokens=9, p50_latency=0.03223140200134367, p95_latency=0.039758610000717454, p99_latency=0.039758610000717454, gpu_memory_used=5583.0, gpu_utilization=24.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.007560989000921836, tpot=0.005887478334140421, throughput=2038.224061125486, total_tokens=36, input_tokens=36, output_tokens=0, p50_latency=0.005380335001973435, p95_latency=0.007560989000921836, p99_latency=0.007560989000921836, gpu_memory_used=5583.0, gpu_utilization=0.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.006921066000359133, tpot=0.005501290334602042, throughput=1817.7553613380398, total_tokens=30, input_tokens=30, output_tokens=0, p50_latency=0.004855064002185827, p95_latency=0.006921066000359133, p99_latency=0.006921066000359133, gpu_memory_used=5583.0, gpu_utilization=2.0, cpu_utilization=3.6)"
+  ],
+  "system_info": {
+    "gpu_memory_used": 953.0,
+    "gpu_utilization": 0.0,
+    "cpu_utilization": 0.0,
+    "total_memory": 177.0705108642578,
+    "available_memory": 160.94939804077148
+  },
+  "overall_metrics": "InferenceMetrics(ttft=0.02280783699825406, tpot=0.01611375823316242, throughput=1973.4688543703603, total_tokens=954, input_tokens=870, output_tokens=84, p50_latency=0.00831283700063068, p95_latency=0.037235320000036154, p99_latency=0.039758610000717454, gpu_memory_used=5583.0, gpu_utilization=1.0, cpu_utilization=0.0)",
+  "phase_breakdown": {
+    "tokenization": 6.609989213757217e-07,
+    "model_loading": 14.514613903000281,
+    "prefill": 2.900014806073159e-07,
+    "decode": 0,
+    "output_processing": 0,
+    "memory_operations": 0
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "model": "microsoft/DialoGPT-small",
+  "comparison": {
+    "transformers": {
+      "latency": 0.0579838752746582,
+      "output_length": 39,
+      "status": "success"
+    },
+    "vllm": {
+      "latency": 0.022676839002087945,
+      "output_length": 19,
+      "status": "success"
+    }
+  },
+  "system_info": {
+    "python_version": "3.12.11",
+    "cuda_available": true
+  }
+}

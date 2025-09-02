@@ -1,0 +1,10 @@
+Explain the concept of machine learning in simple terms with examples from everyday life and discuss how it differs from traditional programming approaches.
+Write a detailed short story about artificial intelligence becoming self-aware and its implications for human society, including both positive and negative aspects.
+What are the benefits and challenges of renewable energy sources like solar, wind, and hydroelectric power? Provide specific examples and discuss current technological limitations and future potential.
+Describe how photosynthesis works in plants at a molecular level, including the role of chlorophyll, the light-dependent and light-independent reactions, and how this process contributes to the global carbon cycle.
+What is quantum computing and how does it differ from classical computing? Explain quantum bits, superposition, entanglement, and discuss current practical applications and challenges in building quantum computers.
+Explain the water cycle and its importance to life on Earth, including evaporation, condensation, precipitation, infiltration, and surface runoff. Discuss how human activities affect this cycle and its role in climate regulation.
+How do search engines like Google work? Describe the crawling, indexing, and ranking processes, including the role of algorithms like PageRank and modern machine learning approaches to search relevance.
+What are the main differences between Python and JavaScript programming languages? Compare their syntax, use cases, performance characteristics, ecosystem, and discuss when to choose one over the other for different types of projects.
+Describe the process of evolution by natural selection in detail, including genetic variation, natural selection, genetic drift, gene flow, and speciation. Provide examples from different species and discuss how this process has shaped life on Earth.
+What are the key principles of sustainable development? Discuss the triple bottom line approach, environmental protection, social equity, economic viability, and provide examples of sustainable development initiatives around the world.

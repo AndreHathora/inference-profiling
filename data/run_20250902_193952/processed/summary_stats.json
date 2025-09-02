@@ -1,0 +1,26 @@
+{
+  "overall_stats": {
+    "total_experiments": 22,
+    "engines_tested": [
+      "transformers",
+      "vllm"
+    ],
+    "models_tested": [
+      "microsoft/DialoGPT-small"
+    ]
+  },
+  "transformers_stats": {
+    "avg_ttft": 0.022243152965198864,
+    "avg_throughput": 978.4141940282938,
+    "avg_gpu_memory": 953.0,
+    "max_throughput": 1639.1114198871037,
+    "min_ttft": 0.007422447204589844
+  },
+  "vllm_stats": {
+    "avg_ttft": 0.017244998909022383,
+    "avg_throughput": 1215.9082458589996,
+    "avg_gpu_memory": 5583.0,
+    "max_throughput": 2038.224061125486,
+    "min_ttft": 0.006921066000359133
+  }
+}

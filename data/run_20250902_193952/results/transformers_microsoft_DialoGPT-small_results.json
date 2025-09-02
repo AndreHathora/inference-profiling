@@ -1,0 +1,32 @@
+{
+  "model": "microsoft/DialoGPT-small",
+  "phases": {},
+  "metrics": [
+    "InferenceMetrics(ttft=0.029874324798583984, tpot=0.03916247685750326, throughput=229.81181789771458, total_tokens=27, input_tokens=23, output_tokens=4, p50_latency=0.030064105987548828, p95_latency=0.05754899978637695, p99_latency=0.05754899978637695, gpu_memory_used=953.0, gpu_utilization=11.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.05933070182800293, tpot=0.05357154210408529, throughput=199.11068914055477, total_tokens=32, input_tokens=22, output_tokens=10, p50_latency=0.05933070182800293, p95_latency=0.06220102310180664, p99_latency=0.06220102310180664, gpu_memory_used=953.0, gpu_utilization=22.0, cpu_utilization=0.4)",
+    "InferenceMetrics(ttft=0.009615182876586914, tpot=0.007524013519287109, throughput=1196.1700994993346, total_tokens=27, input_tokens=27, output_tokens=0, p50_latency=0.006506681442260742, p95_latency=0.009615182876586914, p99_latency=0.009615182876586914, gpu_memory_used=953.0, gpu_utilization=5.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.010869503021240234, tpot=0.008245229721069336, throughput=1212.8224850360004, total_tokens=30, input_tokens=30, output_tokens=0, p50_latency=0.007367849349975586, p95_latency=0.010869503021240234, p99_latency=0.010869503021240234, gpu_memory_used=953.0, gpu_utilization=3.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.009494543075561523, tpot=0.007715861002604167, throughput=1209.6295319709955, total_tokens=28, input_tokens=28, output_tokens=0, p50_latency=0.006969928741455078, p95_latency=0.009494543075561523, p99_latency=0.009494543075561523, gpu_memory_used=953.0, gpu_utilization=3.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.00822591781616211, tpot=0.00738827387491862, throughput=1443.7291913172558, total_tokens=32, input_tokens=32, output_tokens=0, p50_latency=0.007014751434326172, p95_latency=0.00822591781616211, p99_latency=0.00822591781616211, gpu_memory_used=953.0, gpu_utilization=5.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.04049253463745117, tpot=0.03980890909830729, throughput=293.0667262912448, total_tokens=35, input_tokens=29, output_tokens=6, p50_latency=0.03955411911010742, p95_latency=0.04049253463745117, p99_latency=0.04049253463745117, gpu_memory_used=953.0, gpu_utilization=21.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.03151130676269531, tpot=0.029067834218343098, throughput=447.22974206989323, total_tokens=39, input_tokens=33, output_tokens=6, p50_latency=0.03151130676269531, p95_latency=0.04884529113769531, p99_latency=0.04884529113769531, gpu_memory_used=953.0, gpu_utilization=16.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.007963895797729492, tpot=0.0073210398356119795, throughput=1639.1114198871037, total_tokens=36, input_tokens=36, output_tokens=0, p50_latency=0.007030010223388672, p95_latency=0.007963895797729492, p99_latency=0.007963895797729492, gpu_memory_used=953.0, gpu_utilization=3.0, cpu_utilization=0.0)",
+    "InferenceMetrics(ttft=0.007422447204589844, tpot=0.0072536468505859375, throughput=1378.6168814094135, total_tokens=30, input_tokens=30, output_tokens=0, p50_latency=0.007422447204589844, p95_latency=0.007635354995727539, p99_latency=0.007635354995727539, gpu_memory_used=953.0, gpu_utilization=5.0, cpu_utilization=2.2)"
+  ],
+  "system_info": {
+    "gpu_memory_used": 4.0,
+    "gpu_utilization": 0.0,
+    "cpu_utilization": 0.0,
+    "total_memory": 177.0705108642578,
+    "available_memory": 161.7388687133789
+  },
+  "overall_metrics": "InferenceMetrics(ttft=0.029874324798583984, tpot=0.020705882708231607, throughput=1513.2575497917212, total_tokens=940, input_tokens=870, output_tokens=70, p50_latency=0.0080949068069458, p95_latency=0.05933070182800293, p99_latency=0.06220102310180664, gpu_memory_used=953.0, gpu_utilization=0.0, cpu_utilization=0.0)",
+  "phase_breakdown": {
+    "tokenization": 1.4130018826108426e-06,
+    "model_loading": 0.05246904799787444,
+    "prefill": 3.81001882487908e-07,
+    "decode": 0,
+    "output_processing": 0,
+    "memory_operations": 0
+  }
+}

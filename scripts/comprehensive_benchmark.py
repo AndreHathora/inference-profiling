@@ -47,6 +47,8 @@ class ComprehensiveBenchmark:
         self.processed_dir = self.run_dir / "processed"
         self.plots_dir = self.run_dir / "plots"
         self.reports_dir = self.run_dir / "reports"
+        
+        self.skip_sglang = True 
 
         for dir_path in [self.run_dir, self.results_dir, self.processed_dir,
                         self.plots_dir, self.reports_dir]:
@@ -54,6 +56,8 @@ class ComprehensiveBenchmark:
 
         print(f"Output directory: {self.run_dir}")
         print(f"Model: {self.model_name}")
+        if self.skip_sglang:
+            print("SGLang will be skipped due to PyTorch dependency conflicts")
 
     def run_command(self, cmd: list, description: str, cwd: Path = None) -> bool:
         print(f"\n{'='*60}")
@@ -125,11 +129,11 @@ class ComprehensiveBenchmark:
 
         engines = [
             ('Transformers', 'src.engines.transformers.benchmark_transformers', 'TransformersBenchmark'),
-            ('vLLM', 'src.engines.vllm.benchmark_vllm', 'VLLMBenchmark'),
-            ('SGLang', 'src.engines.sglang.benchmark_sglang', 'SGLangBenchmark')
-            # Note: SGLang currently falls back to mock mode due to CUDA ABI compatibility issues
-            # but is included to show the benchmark framework can handle multiple engines
+            ('vLLM', 'src.engines.vllm.benchmark_vllm', 'VLLMBenchmark')
         ]
+        
+        if not self.skip_sglang:
+            engines.append(('SGLang', 'src.engines.sglang.benchmark_sglang', 'SGLangBenchmark'))
 
         for engine_name, module_path, class_name in engines:
             print(f"Benchmarking {engine_name}...")
@@ -196,9 +200,11 @@ class ComprehensiveBenchmark:
             # Run quick comparison test
             engines = [
                 ('Transformers', 'src.engines.transformers.benchmark_transformers', 'TransformersBenchmark'),
-                ('vLLM', 'src.engines.vllm.benchmark_vllm', 'VLLMBenchmark'),
-                ('SGLang', 'src.engines.sglang.benchmark_sglang', 'SGLangBenchmark')
+                ('vLLM', 'src.engines.vllm.benchmark_vllm', 'VLLMBenchmark')
             ]
+            
+            if not self.skip_sglang:
+                engines.append(('SGLang', 'src.engines.sglang.benchmark_sglang', 'SGLangBenchmark'))
 
             comparison_results = {
                 'model': self.model_name,
@@ -460,12 +466,14 @@ Examples:
     # Setup environment for SM_90 CUDA support
     setup_sm90_environment()
     
-    if not setup_test_environment():
+    # Create benchmark instance to get skip flags
+    benchmark = ComprehensiveBenchmark(args.model, args.output)
+    
+    if not setup_test_environment(skip_sglang=benchmark.skip_sglang):
         print("Environment setup failed. Please fix issues and try again.")
         sys.exit(1)
 
     # Run comprehensive benchmark
-    benchmark = ComprehensiveBenchmark(args.model, args.output)
     success = benchmark.run_complete_workflow()
 
     sys.exit(0 if success else 1)

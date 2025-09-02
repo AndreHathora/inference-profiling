@@ -44,7 +44,7 @@ def get_installed_packages():
         return {}
 
 
-def validate_environment():
+def validate_environment(skip_sglang=False):
     issues = []
 
     if not torch.cuda.is_available():
@@ -55,10 +55,11 @@ def validate_environment():
     except ImportError:
         issues.append("vLLM not installed")
 
-    try:
-        import sglang
-    except ImportError:
-        issues.append("SGLang not installed")
+    if not skip_sglang:
+        try:
+            import sglang
+        except ImportError:
+            issues.append("SGLang not installed")
 
     try:
         import flashinfer
@@ -156,10 +157,10 @@ def print_system_info():
     return info
 
 
-def setup_test_environment():
+def setup_test_environment(skip_sglang=False):
     print("Setting up test environment...")
 
-    if not validate_environment():
+    if not validate_environment(skip_sglang=skip_sglang):
         print("Environment validation failed. Please install missing packages.")
         return False
 
