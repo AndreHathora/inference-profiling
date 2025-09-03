@@ -137,6 +137,4 @@ dmypy.json
 ehthumbs.db
 Thumbs.db
 
-.cursor/
-.cursorrules
-.cursor/rules
+cursor/*

@@ -307,6 +307,73 @@ class VLLMLatencyProfiler:
             
         return breakdown
     
+    def profile_batch_throughput(self, prompt: str, batch_sizes: List[int] = None, max_tokens: int = 100) -> List[Dict[str, Any]]:
+        """Profile latency vs throughput across different batch sizes"""
+        if batch_sizes is None:
+            batch_sizes = [1, 2, 4, 8, 16, 32]
+        
+        results = []
+        
+        for batch_size in batch_sizes:
+            self.logger.info(f"Profiling batch size: {batch_size}")
+            
+            # Create batch of prompts
+            prompts = [prompt] * batch_size
+            
+            # Measure total batch processing time
+            start_time = time.perf_counter()
+            
+            if self.engine:
+                try:
+                    from vllm import SamplingParams
+                    
+                    sampling_params = SamplingParams(
+                        temperature=0.7,
+                        top_p=0.9,
+                        max_tokens=max_tokens
+                    )
+                    
+                    outputs = self.engine.generate(prompts, sampling_params)
+                    total_tokens_generated = sum(len(self.tokenizer.encode(output.outputs[0].text)) for output in outputs)
+                    
+                except ImportError:
+                    # Simulate batch processing
+                    time.sleep(batch_size * max_tokens * 0.02)  # Simulate processing time
+                    total_tokens_generated = batch_size * max_tokens
+            else:
+                # Simulate batch processing
+                time.sleep(batch_size * max_tokens * 0.02)
+                total_tokens_generated = batch_size * max_tokens
+            
+            total_time = (time.perf_counter() - start_time) * 1000  # ms
+            
+            # Calculate metrics
+            avg_latency_per_request = total_time / batch_size  # ms per request
+            throughput_requests_per_sec = (batch_size * 1000) / total_time  # requests/sec
+            throughput_tokens_per_sec = (total_tokens_generated * 1000) / total_time  # tokens/sec
+            
+            # Estimate memory usage scaling
+            input_tokens = len(self.tokenizer.encode(prompt)) if self.tokenizer else 100
+            memory_per_request = self.calculate_memory_requirements(input_tokens, max_tokens)['total_required_mb']
+            total_memory_mb = memory_per_request * batch_size
+            
+            result = {
+                'batch_size': batch_size,
+                'total_time_ms': total_time,
+                'avg_latency_per_request_ms': avg_latency_per_request,
+                'throughput_requests_per_sec': throughput_requests_per_sec,
+                'throughput_tokens_per_sec': throughput_tokens_per_sec,
+                'total_tokens_generated': total_tokens_generated,
+                'memory_usage_mb': total_memory_mb,
+                'efficiency_ratio': throughput_requests_per_sec / batch_size  # Efficiency metric
+            }
+            
+            results.append(result)
+            self.logger.info(f"Batch {batch_size}: {avg_latency_per_request:.1f}ms/req, "
+                           f"{throughput_requests_per_sec:.1f} req/s, {throughput_tokens_per_sec:.1f} tok/s")
+        
+        return results
+    
     def _profile_input_processing(self, prompt: str) -> Dict[str, float]:
         """Profile input processing components"""
         profile = {}
@@ -736,7 +803,7 @@ class VLLMLatencyProfiler:
         
         return results
     
-    def plot_latency_breakdown(self, profiles: List[LatencyProfile], prompt_sizes: List[int], save_dir: str = None):
+    def plot_latency_breakdown(self, profiles: List[LatencyProfile], prompt_sizes: List[int], save_dir: str = None, base_prompt: str = "Test prompt for batch analysis"):
         """Create individual plots for each component and save in organized directory structure"""
         from datetime import datetime
         
@@ -776,10 +843,16 @@ class VLLMLatencyProfiler:
         # 5. Deep kernel-level profiling plots
         self._create_deep_profiling_plots(profiles, prompt_sizes, run_dir)
         
+        # 6. Batch analysis for latency vs throughput (NEW)
+        # Use the same base prompt from the comprehensive analysis
+        self._create_batch_analysis_plots(run_dir, base_prompt=base_prompt)
+        
         print(f"All plots saved to: {run_dir}")
-        print(f"✅ Generated 6 plots including deep kernel analysis:")
+        print(f"✅ Generated 9 plots including deep analysis:")
         print("   01-04: Standard component analysis")
-        print("   05-06: Deep kernel-level breakdown")
+        print("   05-06: Deep kernel-level breakdown") 
+        print("   07-09: Batch analysis (latency vs throughput)")
+        print("📊 Batch analysis data exported to CSV files")
         return scaling_df
     
     def _create_pie_chart(self, profiles: List[LatencyProfile], scaling_df: pd.DataFrame, run_dir: str):
@@ -1000,6 +1073,402 @@ class VLLMLatencyProfiler:
         plt.savefig(os.path.join(run_dir, '06_decode_kernel_breakdown.png'), dpi=300, bbox_inches='tight')
         plt.close()
     
+    def _create_batch_analysis_plots(self, run_dir: str, base_prompt: str = "Test prompt for batch analysis"):
+        """Create batch analysis plots as part of the main comprehensive analysis"""
+        batch_sizes = [1, 2, 4, 8, 16, 32]
+        
+        # Ensure model is loaded
+        if not self.is_model_loaded:
+            self._profile_model_loading()
+        
+        # Run batch profiling
+        batch_results = self.profile_batch_throughput(base_prompt, batch_sizes, max_tokens=100)
+        
+        # Extract data
+        latencies = [r['avg_latency_per_request_ms'] for r in batch_results]
+        req_throughput = [r['throughput_requests_per_sec'] for r in batch_results]
+        token_throughput = [r['throughput_tokens_per_sec'] for r in batch_results]
+        memory_usage = [r['memory_usage_mb'] for r in batch_results]
+        efficiency = [r['efficiency_ratio'] for r in batch_results]
+        
+        # Create plots with proper numbering for main analysis
+        self._create_integrated_latency_throughput_plot(batch_sizes, latencies, req_throughput, token_throughput, run_dir)
+        self._create_integrated_batch_memory_plot(batch_sizes, memory_usage, run_dir)
+        self._create_integrated_efficiency_plot(batch_sizes, efficiency, latencies, run_dir)
+        
+        # Export batch analysis data to CSV instead of plot
+        self._export_batch_analysis_csv(batch_results, run_dir)
+        
+    def _create_integrated_latency_throughput_plot(self, batch_sizes, latencies, req_throughput, token_throughput, run_dir):
+        """Create latency vs throughput plot integrated with main analysis"""
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Plot 1: Latency vs Batch Size
+        ax1.plot(batch_sizes, latencies, marker='o', linewidth=3, markersize=8, color='red')
+        ax1.set_xlabel('Batch Size', fontsize=12)
+        ax1.set_ylabel('Avg Latency per Request (ms)', fontsize=12)
+        ax1.set_title('Latency vs Batch Size', fontsize=14, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xscale('log', base=2)
+        
+        # Plot 2: Request Throughput vs Batch Size
+        ax2.plot(batch_sizes, req_throughput, marker='s', linewidth=3, markersize=8, color='blue')
+        ax2.set_xlabel('Batch Size', fontsize=12)
+        ax2.set_ylabel('Requests per Second', fontsize=12)
+        ax2.set_title('Request Throughput vs Batch Size', fontsize=14, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xscale('log', base=2)
+        
+        # Plot 3: Token Throughput vs Batch Size
+        ax3.plot(batch_sizes, token_throughput, marker='^', linewidth=3, markersize=8, color='green')
+        ax3.set_xlabel('Batch Size', fontsize=12)
+        ax3.set_ylabel('Tokens per Second', fontsize=12)
+        ax3.set_title('Token Throughput vs Batch Size', fontsize=14, fontweight='bold')
+        ax3.grid(True, alpha=0.3)
+        ax3.set_xscale('log', base=2)
+        
+        # Plot 4: Latency vs Request Throughput (Trade-off curve)
+        ax4.plot(req_throughput, latencies, marker='D', linewidth=3, markersize=8, color='purple')
+        for i, batch_size in enumerate(batch_sizes):
+            ax4.annotate(f'B={batch_size}', (req_throughput[i], latencies[i]), 
+                        xytext=(5, 5), textcoords='offset points', fontsize=9)
+        ax4.set_xlabel('Request Throughput (req/s)', fontsize=12)
+        ax4.set_ylabel('Avg Latency per Request (ms)', fontsize=12)
+        ax4.set_title('Latency-Throughput Trade-off', fontsize=14, fontweight='bold')
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(run_dir, '07_batch_latency_throughput.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _create_integrated_batch_memory_plot(self, batch_sizes, memory_usage, run_dir):
+        """Create memory usage vs batch size plot integrated with main analysis"""
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        ax.plot(batch_sizes, memory_usage, marker='o', linewidth=3, markersize=8, color='orange')
+        ax.set_xlabel('Batch Size', fontsize=12)
+        ax.set_ylabel('Memory Usage (MB)', fontsize=12)
+        ax.set_title('Memory Usage vs Batch Size', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.set_xscale('log', base=2)
+        
+        # Add memory efficiency text
+        memory_per_request = [mem/batch for mem, batch in zip(memory_usage, batch_sizes)]
+        avg_mem_per_req = np.mean(memory_per_request)
+        ax.text(0.02, 0.98, f'Avg Memory per Request: {avg_mem_per_req:.1f} MB\n'
+                              f'Linear scaling indicates good memory efficiency', 
+               transform=ax.transAxes, fontsize=10, verticalalignment='top',
+               bbox=dict(boxstyle="round,pad=0.3", facecolor='lightyellow', alpha=0.8))
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(run_dir, '08_batch_memory_scaling.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _create_integrated_efficiency_plot(self, batch_sizes, efficiency, latencies, run_dir):
+        """Create efficiency analysis plot integrated with main analysis"""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # Plot 1: Efficiency ratio vs batch size
+        ax1.plot(batch_sizes, efficiency, marker='o', linewidth=3, markersize=8, color='teal')
+        ax1.set_xlabel('Batch Size', fontsize=12)
+        ax1.set_ylabel('Efficiency Ratio (req/s per batch unit)', fontsize=12)
+        ax1.set_title('Batching Efficiency', fontsize=14, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xscale('log', base=2)
+        
+        # Find optimal batch size (highest efficiency)
+        optimal_idx = np.argmax(efficiency)
+        optimal_batch = batch_sizes[optimal_idx]
+        optimal_eff = efficiency[optimal_idx]
+        ax1.axvline(x=optimal_batch, color='red', linestyle='--', alpha=0.7)
+        ax1.text(optimal_batch, optimal_eff, f'Optimal: {optimal_batch}', 
+                ha='center', va='bottom', fontweight='bold', color='red')
+        
+        # Plot 2: Latency increase factor vs batch size
+        base_latency = latencies[0]  # batch size 1 latency
+        latency_factors = [lat/base_latency for lat in latencies]
+        
+        ax2.plot(batch_sizes, latency_factors, marker='s', linewidth=3, markersize=8, color='crimson')
+        ax2.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5)
+        ax2.set_xlabel('Batch Size', fontsize=12)
+        ax2.set_ylabel('Latency Increase Factor', fontsize=12)
+        ax2.set_title('Latency Penalty from Batching', fontsize=14, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xscale('log', base=2)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(run_dir, '09_batch_efficiency_analysis.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _export_batch_analysis_csv(self, batch_results, run_dir):
+        """Export batch analysis data to CSV for further analysis"""
+        import csv
+        
+        # Create comprehensive CSV with all batch metrics
+        csv_file = os.path.join(run_dir, 'batch_analysis_data.csv')
+        
+        with open(csv_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            
+            # Write header
+            writer.writerow([
+                'batch_size',
+                'total_time_ms',
+                'avg_latency_per_request_ms',
+                'throughput_requests_per_sec',
+                'throughput_tokens_per_sec',
+                'total_tokens_generated',
+                'memory_usage_mb',
+                'efficiency_ratio',
+                'latency_increase_factor',
+                'memory_per_request_mb'
+            ])
+            
+            # Calculate additional metrics
+            base_latency = batch_results[0]['avg_latency_per_request_ms']
+            
+            # Write data rows
+            for result in batch_results:
+                latency_factor = result['avg_latency_per_request_ms'] / base_latency
+                memory_per_request = result['memory_usage_mb'] / result['batch_size']
+                
+                writer.writerow([
+                    result['batch_size'],
+                    result['total_time_ms'],
+                    result['avg_latency_per_request_ms'],
+                    result['throughput_requests_per_sec'],
+                    result['throughput_tokens_per_sec'],
+                    result['total_tokens_generated'],
+                    result['memory_usage_mb'],
+                    result['efficiency_ratio'],
+                    latency_factor,
+                    memory_per_request
+                ])
+        
+        # Also create a summary CSV with key insights
+        summary_file = os.path.join(run_dir, 'batch_analysis_summary.csv')
+        
+        # Extract key metrics
+        batch_sizes = [r['batch_size'] for r in batch_results]
+        max_req_throughput = max(r['throughput_requests_per_sec'] for r in batch_results)
+        max_token_throughput = max(r['throughput_tokens_per_sec'] for r in batch_results)
+        min_latency = min(r['avg_latency_per_request_ms'] for r in batch_results)
+        max_memory = max(r['memory_usage_mb'] for r in batch_results)
+        
+        # Find optimal batch
+        efficiency_values = [r['efficiency_ratio'] for r in batch_results]
+        optimal_batch_idx = np.argmax(efficiency_values)
+        optimal_batch = batch_results[optimal_batch_idx]
+        
+        with open(summary_file, 'w', newline='') as f:
+            writer = csv.writer(f)
+            
+            # Write summary metrics
+            writer.writerow(['Metric', 'Value', 'Unit'])
+            writer.writerow(['Max Request Throughput', f"{max_req_throughput:.1f}", 'req/s'])
+            writer.writerow(['Max Token Throughput', f"{max_token_throughput:.1f}", 'tok/s'])
+            writer.writerow(['Min Latency', f"{min_latency:.1f}", 'ms/request'])
+            writer.writerow(['Peak Memory Usage', f"{max_memory:.1f}", 'MB'])
+            writer.writerow(['Optimal Batch Size', optimal_batch['batch_size'], 'requests'])
+            writer.writerow(['Optimal Efficiency Score', f"{optimal_batch['efficiency_ratio']:.3f}", 'req/s per batch unit'])
+            writer.writerow(['Throughput Scaling Factor', f"{max_req_throughput/batch_results[0]['throughput_requests_per_sec']:.1f}", 'x improvement'])
+            writer.writerow(['Max Latency Penalty', f"{batch_results[-1]['avg_latency_per_request_ms']/min_latency:.1f}", 'x increase'])
+        
+        print(f"📊 Batch analysis data exported to:")
+        print(f"   - {csv_file}")
+        print(f"   - {summary_file}")
+    
+    def plot_batch_analysis(self, batch_results: List[Dict[str, Any]], save_dir: str = None):
+        """Create batch analysis plots for latency vs throughput"""
+        from datetime import datetime
+        
+        if save_dir is None:
+            save_dir = "latency_data"
+        
+        # Create run folder with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = os.path.join(save_dir, f"batch_analysis_{timestamp}")
+        os.makedirs(run_dir, exist_ok=True)
+        
+        # Extract data
+        batch_sizes = [r['batch_size'] for r in batch_results]
+        latencies = [r['avg_latency_per_request_ms'] for r in batch_results]
+        req_throughput = [r['throughput_requests_per_sec'] for r in batch_results]
+        token_throughput = [r['throughput_tokens_per_sec'] for r in batch_results]
+        memory_usage = [r['memory_usage_mb'] for r in batch_results]
+        efficiency = [r['efficiency_ratio'] for r in batch_results]
+        
+        # 1. Latency vs Throughput Trade-off
+        self._create_latency_throughput_plot(batch_sizes, latencies, req_throughput, token_throughput, run_dir)
+        
+        # 2. Memory vs Batch Size
+        self._create_batch_memory_plot(batch_sizes, memory_usage, run_dir)
+        
+        # 3. Efficiency Analysis
+        self._create_efficiency_plot(batch_sizes, efficiency, latencies, run_dir)
+        
+        # 4. Summary Dashboard
+        self._create_batch_summary_dashboard(batch_results, run_dir)
+        
+        print(f"Batch analysis plots saved to: {run_dir}")
+        return run_dir
+    
+    def _create_latency_throughput_plot(self, batch_sizes, latencies, req_throughput, token_throughput, run_dir):
+        """Create latency vs throughput trade-off plot"""
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # Plot 1: Latency vs Batch Size
+        ax1.plot(batch_sizes, latencies, marker='o', linewidth=3, markersize=8, color='red')
+        ax1.set_xlabel('Batch Size', fontsize=12)
+        ax1.set_ylabel('Avg Latency per Request (ms)', fontsize=12)
+        ax1.set_title('Latency vs Batch Size', fontsize=14, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xscale('log', base=2)
+        
+        # Plot 2: Request Throughput vs Batch Size
+        ax2.plot(batch_sizes, req_throughput, marker='s', linewidth=3, markersize=8, color='blue')
+        ax2.set_xlabel('Batch Size', fontsize=12)
+        ax2.set_ylabel('Requests per Second', fontsize=12)
+        ax2.set_title('Request Throughput vs Batch Size', fontsize=14, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xscale('log', base=2)
+        
+        # Plot 3: Token Throughput vs Batch Size
+        ax3.plot(batch_sizes, token_throughput, marker='^', linewidth=3, markersize=8, color='green')
+        ax3.set_xlabel('Batch Size', fontsize=12)
+        ax3.set_ylabel('Tokens per Second', fontsize=12)
+        ax3.set_title('Token Throughput vs Batch Size', fontsize=14, fontweight='bold')
+        ax3.grid(True, alpha=0.3)
+        ax3.set_xscale('log', base=2)
+        
+        # Plot 4: Latency vs Request Throughput (Trade-off curve)
+        ax4.plot(req_throughput, latencies, marker='D', linewidth=3, markersize=8, color='purple')
+        for i, batch_size in enumerate(batch_sizes):
+            ax4.annotate(f'B={batch_size}', (req_throughput[i], latencies[i]), 
+                        xytext=(5, 5), textcoords='offset points', fontsize=9)
+        ax4.set_xlabel('Request Throughput (req/s)', fontsize=12)
+        ax4.set_ylabel('Avg Latency per Request (ms)', fontsize=12)
+        ax4.set_title('Latency-Throughput Trade-off', fontsize=14, fontweight='bold')
+        ax4.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(run_dir, '01_latency_throughput_analysis.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _create_batch_memory_plot(self, batch_sizes, memory_usage, run_dir):
+        """Create memory usage vs batch size plot"""
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        ax.plot(batch_sizes, memory_usage, marker='o', linewidth=3, markersize=8, color='orange')
+        ax.set_xlabel('Batch Size', fontsize=12)
+        ax.set_ylabel('Memory Usage (MB)', fontsize=12)
+        ax.set_title('Memory Usage vs Batch Size', fontsize=14, fontweight='bold')
+        ax.grid(True, alpha=0.3)
+        ax.set_xscale('log', base=2)
+        
+        # Add memory efficiency text
+        memory_per_request = [mem/batch for mem, batch in zip(memory_usage, batch_sizes)]
+        avg_mem_per_req = np.mean(memory_per_request)
+        ax.text(0.02, 0.98, f'Avg Memory per Request: {avg_mem_per_req:.1f} MB\n'
+                              f'Linear scaling indicates good memory efficiency', 
+               transform=ax.transAxes, fontsize=10, verticalalignment='top',
+               bbox=dict(boxstyle="round,pad=0.3", facecolor='lightyellow', alpha=0.8))
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(run_dir, '02_memory_scaling.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _create_efficiency_plot(self, batch_sizes, efficiency, latencies, run_dir):
+        """Create efficiency analysis plot"""
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # Plot 1: Efficiency ratio vs batch size
+        ax1.plot(batch_sizes, efficiency, marker='o', linewidth=3, markersize=8, color='teal')
+        ax1.set_xlabel('Batch Size', fontsize=12)
+        ax1.set_ylabel('Efficiency Ratio (req/s per batch unit)', fontsize=12)
+        ax1.set_title('Batching Efficiency', fontsize=14, fontweight='bold')
+        ax1.grid(True, alpha=0.3)
+        ax1.set_xscale('log', base=2)
+        
+        # Find optimal batch size (highest efficiency)
+        optimal_idx = np.argmax(efficiency)
+        optimal_batch = batch_sizes[optimal_idx]
+        optimal_eff = efficiency[optimal_idx]
+        ax1.axvline(x=optimal_batch, color='red', linestyle='--', alpha=0.7)
+        ax1.text(optimal_batch, optimal_eff, f'Optimal: {optimal_batch}', 
+                ha='center', va='bottom', fontweight='bold', color='red')
+        
+        # Plot 2: Latency increase factor vs batch size
+        base_latency = latencies[0]  # batch size 1 latency
+        latency_factors = [lat/base_latency for lat in latencies]
+        
+        ax2.plot(batch_sizes, latency_factors, marker='s', linewidth=3, markersize=8, color='crimson')
+        ax2.axhline(y=1.0, color='gray', linestyle='--', alpha=0.5)
+        ax2.set_xlabel('Batch Size', fontsize=12)
+        ax2.set_ylabel('Latency Increase Factor', fontsize=12)
+        ax2.set_title('Latency Penalty from Batching', fontsize=14, fontweight='bold')
+        ax2.grid(True, alpha=0.3)
+        ax2.set_xscale('log', base=2)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(run_dir, '03_efficiency_analysis.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    def _create_batch_summary_dashboard(self, batch_results, run_dir):
+        """Create summary dashboard with key metrics"""
+        fig, ax = plt.subplots(figsize=(12, 8))
+        ax.axis('off')
+        
+        # Extract key metrics
+        batch_sizes = [r['batch_size'] for r in batch_results]
+        max_req_throughput = max(r['throughput_requests_per_sec'] for r in batch_results)
+        max_token_throughput = max(r['throughput_tokens_per_sec'] for r in batch_results)
+        min_latency = min(r['avg_latency_per_request_ms'] for r in batch_results)
+        max_memory = max(r['memory_usage_mb'] for r in batch_results)
+        
+        # Find optimal points
+        efficiency_values = [r['efficiency_ratio'] for r in batch_results]
+        optimal_batch_idx = np.argmax(efficiency_values)
+        optimal_batch = batch_results[optimal_batch_idx]
+        
+        # Create summary text
+        summary_text = f"""
+BATCH ANALYSIS SUMMARY
+
+Performance Peaks:
+• Maximum Request Throughput: {max_req_throughput:.1f} req/s
+• Maximum Token Throughput: {max_token_throughput:.1f} tok/s
+• Minimum Latency: {min_latency:.1f} ms/request
+• Peak Memory Usage: {max_memory:.1f} MB
+
+Optimal Batch Configuration:
+• Batch Size: {optimal_batch['batch_size']}
+• Latency: {optimal_batch['avg_latency_per_request_ms']:.1f} ms/request
+• Request Throughput: {optimal_batch['throughput_requests_per_sec']:.1f} req/s
+• Token Throughput: {optimal_batch['throughput_tokens_per_sec']:.1f} tok/s
+• Memory Usage: {optimal_batch['memory_usage_mb']:.1f} MB
+• Efficiency Score: {optimal_batch['efficiency_ratio']:.3f}
+
+Scaling Analysis:
+• Batch sizes tested: {min(batch_sizes)} - {max(batch_sizes)}
+• Throughput scaling: {max_req_throughput/batch_results[0]['throughput_requests_per_sec']:.1f}x improvement
+• Latency penalty: {batch_results[-1]['avg_latency_per_request_ms']/min_latency:.1f}x at largest batch
+
+Recommendations:
+• Use batch size {optimal_batch['batch_size']} for optimal efficiency
+• Consider memory constraints at scale ({max_memory:.0f} MB peak)
+• Monitor latency SLA vs throughput requirements
+        """
+        
+        ax.text(0.05, 0.95, summary_text, transform=ax.transAxes, fontsize=11,
+               verticalalignment='top', fontfamily='monospace',
+               bbox=dict(boxstyle="round,pad=0.5", facecolor='lightblue', alpha=0.8))
+        
+        plt.title('Batch Analysis Summary Dashboard', fontsize=16, fontweight='bold', y=0.98)
+        plt.tight_layout()
+        plt.savefig(os.path.join(run_dir, '04_summary_dashboard.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
 
 
     def run_comprehensive_analysis(self, base_prompt: str = "Explain machine learning concepts"):
@@ -1017,7 +1486,7 @@ class VLLMLatencyProfiler:
         profiles = self.profile_multiple_prompt_sizes(base_prompt, prompt_sizes, max_tokens)
         
         # Create plots in organized directory structure
-        df = self.plot_latency_breakdown(profiles, prompt_sizes, "latency_data")
+        df = self.plot_latency_breakdown(profiles, prompt_sizes, "latency_data", base_prompt)
         
         # Print summary statistics
         print("\n" + "=" * 50)
@@ -1069,6 +1538,60 @@ class VLLMLatencyProfiler:
             print(f"Cache miss rate: {cache_miss:.1f}%")
 
         return profiles, df
+    
+    def run_batch_analysis(self, base_prompt: str = "Explain machine learning concepts", batch_sizes: List[int] = None):
+        """Run comprehensive batch analysis for latency vs throughput"""
+        if batch_sizes is None:
+            batch_sizes = [1, 2, 4, 8, 16, 32]
+        
+        print("Starting batch analysis...")
+        print(f"Base prompt: '{base_prompt}'")
+        print(f"Batch sizes to test: {batch_sizes}")
+        print("=" * 50)
+        
+        # Ensure model is loaded
+        if not self.is_model_loaded:
+            self._profile_model_loading()
+        
+        # Run batch profiling
+        batch_results = self.profile_batch_throughput(base_prompt, batch_sizes, max_tokens=100)
+        
+        # Create batch analysis plots
+        run_dir = self.plot_batch_analysis(batch_results, "latency_data")
+        
+        # Print summary
+        print("\n" + "=" * 50)
+        print("BATCH ANALYSIS SUMMARY")
+        print("=" * 50)
+        
+        # Find key metrics
+        max_throughput = max(r['throughput_requests_per_sec'] for r in batch_results)
+        min_latency = min(r['avg_latency_per_request_ms'] for r in batch_results)
+        efficiency_values = [r['efficiency_ratio'] for r in batch_results]
+        optimal_batch_idx = np.argmax(efficiency_values)
+        optimal_batch = batch_results[optimal_batch_idx]
+        
+        print(f"Peak request throughput: {max_throughput:.1f} req/s")
+        print(f"Minimum latency: {min_latency:.1f} ms/request")
+        print(f"Optimal batch size: {optimal_batch['batch_size']} (efficiency: {optimal_batch['efficiency_ratio']:.3f})")
+        print(f"Throughput improvement: {max_throughput/batch_results[0]['throughput_requests_per_sec']:.1f}x over batch size 1")
+        
+        # Key insights
+        print("\nKey Insights:")
+        if optimal_batch['batch_size'] == 1:
+            print("• Single request processing is most efficient (no batching benefit)")
+        elif optimal_batch['batch_size'] == max(batch_sizes):
+            print("• Larger batch sizes may provide even better efficiency")
+        else:
+            print(f"• Sweet spot at batch size {optimal_batch['batch_size']} balances latency and throughput")
+        
+        latency_penalty = batch_results[-1]['avg_latency_per_request_ms'] / min_latency
+        if latency_penalty > 2.0:
+            print(f"• High latency penalty ({latency_penalty:.1f}x) at largest batch size")
+        else:
+            print(f"• Moderate latency penalty ({latency_penalty:.1f}x) at largest batch size")
+        
+        return batch_results, run_dir
 
 def main():
     """Example usage of the vLLM latency profiler"""
@@ -1079,9 +1602,20 @@ def main():
     test_prompt = "Explain the concept of machine learning in simple terms."
     
     print("Running vLLM latency profiling...")
-    profile = profiler.profile_end_to_end(test_prompt, max_tokens=50)
     
+    # Option 1: Single end-to-end profile
+    profile = profiler.profile_end_to_end(test_prompt, max_tokens=50)
     profiler.print_profile_summary(profile)
+    
+    print("\n" + "="*60)
+    print("Running comprehensive analysis...")
+    # Option 2: Comprehensive prompt size analysis
+    profiler.run_comprehensive_analysis(test_prompt)
+    
+    print("\n" + "="*60)
+    print("Running batch analysis...")
+    # Option 3: NEW - Batch analysis for latency vs throughput
+    profiler.run_batch_analysis(test_prompt)
 
 if __name__ == "__main__":
     main()
