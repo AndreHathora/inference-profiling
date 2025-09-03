@@ -1,5 +1,0 @@
----
-description: Do not produce any emojis in code. Also do not write useless comments.
-globs:
-alwaysApply: true
----
