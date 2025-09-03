@@ -39,3 +39,9 @@
    - PCIe transfer overhead
    - Cache eviction policies
    - Memory defragmentation
+
+## Running the the profiler for vLLM
+
+```bash
+python3 run_vllm_profile.py --model "Qwen/Qwen2.5-7B-Instruct"
+```

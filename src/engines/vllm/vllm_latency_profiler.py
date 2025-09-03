@@ -99,20 +99,224 @@ class VLLMLatencyProfiler:
         self.is_model_loaded = False
         self.logger = logging.getLogger(__name__)
         
+        # Set up cache directories and clear caches on initialization
+        self._setup_cache_directories()
+        self._clear_hf_cache()
+        self._clear_gpu_memory()
+    
+    def _get_clean_model_name(self) -> str:
+        """Convert model name to a clean folder-safe name"""
+        # Remove organization prefix and convert to safe folder name
+        clean_name = self.model_name.split('/')[-1]  # Get last part after /
+        clean_name = clean_name.replace('-', '_').replace('.', '_')  # Replace special chars
+        return clean_name
+    
+    def _calculate_optimal_memory_settings(self, prompt_sizes: List[int], max_tokens: int = 100) -> Dict[str, any]:
+        """Calculate optimal GPU memory utilization and max_model_len to avoid OOM"""
+        # Clear any existing models to get accurate free memory
+        self._clear_gpu_memory()
+        
+        # Get available GPU memory (free memory, not total)
+        gpu_memory_usage = self._get_gpu_memory_usage()
+        gpu_memory_total_gb = gpu_memory_usage['gpu_memory_total_mb'] / 1024
+        gpu_memory_free_gb = (gpu_memory_usage['gpu_memory_total_mb'] - gpu_memory_usage['gpu_memory_used_mb']) / 1024
+        
+        # Get model config for calculations
+        model_config = self._get_model_config()
+        
+        # Calculate memory requirements for largest prompt
+        max_prompt_size = max(prompt_sizes)
+        total_seq_len = max_prompt_size + max_tokens
+        
+        # Calculate minimum required memory components
+        param_size_gb = (model_config['params'] * 2) / (1024**3)  # BF16
+        activation_gb = (total_seq_len * model_config['hidden_size'] * 4 * 2) / (1024**3)  # Conservative estimate
+        overhead_gb = 2.0  # Fixed overhead for CUDA context, buffers, etc.
+        
+        # Calculate maximum possible KV cache size that fits in memory
+        # Use free memory, not total memory
+        available_for_kv = gpu_memory_free_gb - param_size_gb - activation_gb - overhead_gb
+        
+        # Get model's actual maximum position embeddings as upper bound
+        try:
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=True)
+            model_max_positions = getattr(config, 'max_position_embeddings', 
+                                        getattr(config, 'max_sequence_length', 4096))
+        except:
+            model_max_positions = 4096  # Conservative fallback
+        
+        # Calculate max_model_len that fits in available memory
+        # KV cache formula: 2 * num_layers * num_heads * head_dim * max_model_len * 2 bytes
+        kv_cache_per_token = (2 * model_config['num_layers'] * model_config['num_heads'] * 
+                             model_config['head_dim'] * 2) / (1024**3)
+        
+        if kv_cache_per_token > 0:
+            max_model_len_fit = int(available_for_kv / kv_cache_per_token)
+        else:
+            max_model_len_fit = 8192  # Fallback
+        
+        # Use the minimum of: memory-based limit, model's max positions, and a reasonable maximum
+        reasonable_max = min(model_max_positions, 32768)  # Cap at 32K tokens
+        memory_constrained_max = min(max_model_len_fit, reasonable_max)
+        
+        # CRITICAL: Never exceed the model's inherent position embedding limit
+        # If our largest sequence would exceed the model's limit, we need to adjust prompt sizes
+        if total_seq_len > model_max_positions:
+            self.logger.warning(f"Requested sequence length {total_seq_len} exceeds model max {model_max_positions}")
+            safe_max_model_len = model_max_positions
+        else:
+            # Use model's max positions if memory allows, otherwise use memory constraint
+            safe_max_model_len = min(model_max_positions, memory_constrained_max)
+        
+        # Calculate required GPU utilization based on total memory
+        required_memory_gb = param_size_gb + (kv_cache_per_token * safe_max_model_len) + activation_gb + overhead_gb
+        required_gpu_util = min(0.85, required_memory_gb / gpu_memory_total_gb)  # Cap at 85% for safety
+        
+        # Use conservative utilization for large models to avoid OOM on reload
+        if param_size_gb > 20:  # Large models (>20GB)
+            required_gpu_util = min(0.6, required_gpu_util)  # Very conservative
+        elif param_size_gb > 5:  # Medium models (5-20GB)
+            required_gpu_util = min(0.7, required_gpu_util)  # Moderately conservative
+        
+        # Ensure minimum utilization
+        required_gpu_util = max(0.4, required_gpu_util)
+        
+        return {
+            'gpu_memory_utilization': required_gpu_util,
+            'max_model_len': safe_max_model_len,
+            'estimated_memory_gb': required_memory_gb,
+            'available_memory_gb': gpu_memory_free_gb,
+            'total_memory_gb': gpu_memory_total_gb,
+            'param_memory_gb': param_size_gb,
+            'kv_cache_memory_gb': kv_cache_per_token * safe_max_model_len
+        }
+        
     def reload_model(self):
         """Force reload the model for fresh cold start measurements"""
         if self.engine is not None:
             # Clean up existing model
             del self.engine
             self.engine = None
-            torch.cuda.empty_cache()
-            gc.collect()
-            # Give GPU memory time to be released
-            import time
-            time.sleep(2)
+            self._clear_gpu_memory()
         
         self.tokenizer = None
         self.is_model_loaded = False
+    
+    def _clear_gpu_memory(self):
+        """Comprehensive GPU memory cleanup"""
+        try:
+            # Clear any existing vLLM engine first
+            if hasattr(self, 'engine') and self.engine is not None:
+                try:
+                    # Try to properly shutdown vLLM engine
+                    if hasattr(self.engine, 'llm_engine'):
+                        del self.engine.llm_engine
+                    del self.engine
+                    self.engine = None
+                    self.tokenizer = None
+                    self.is_model_loaded = False
+                    self.logger.info("vLLM engine deleted")
+                except Exception as e:
+                    self.logger.warning(f"Error deleting vLLM engine: {e}")
+            
+            if torch.cuda.is_available():
+                # Multiple rounds of cleanup for stubborn memory
+                for i in range(3):
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+                    gc.collect()
+                
+                # Additional CUDA memory cleanup
+                if hasattr(torch.cuda, 'reset_peak_memory_stats'):
+                    torch.cuda.reset_peak_memory_stats()
+                
+                # Additional synchronization
+                torch.cuda.synchronize()
+                
+                # Give GPU time to release memory
+                time.sleep(2)
+                
+                self.logger.info("GPU memory cleared comprehensively")
+        except Exception as e:
+            self.logger.warning(f"Error clearing GPU memory: {e}")
+    
+    def _clear_hf_cache(self):
+        """Clear HuggingFace cache to free disk space"""
+        import shutil
+        import os
+        
+        try:
+            # Common HF cache locations
+            cache_dirs = [
+                os.path.expanduser("~/.cache/huggingface"),
+                os.path.expanduser("~/.cache/torch"),
+                os.path.expanduser("~/.cache/transformers"),
+            ]
+            
+            for cache_dir in cache_dirs:
+                if os.path.exists(cache_dir):
+                    # Only clear if we're running low on space
+                    stat = os.statvfs(cache_dir)
+                    free_space_gb = stat.f_bavail * stat.f_frsize / (1024**3)
+                    
+                    if free_space_gb < 10:  # Less than 10GB free
+                        self.logger.info(f"Low disk space ({free_space_gb:.1f}GB), clearing cache: {cache_dir}")
+                        try:
+                            shutil.rmtree(cache_dir)
+                            os.makedirs(cache_dir, exist_ok=True)
+                        except Exception as e:
+                            self.logger.warning(f"Could not clear cache {cache_dir}: {e}")
+                    else:
+                        self.logger.info(f"Sufficient disk space ({free_space_gb:.1f}GB), keeping cache")
+        except Exception as e:
+            self.logger.warning(f"Error checking/clearing cache: {e}")
+    
+    def _setup_cache_directories(self):
+        """Set up cache directories on available disk space"""
+        import os
+        import stat
+        
+        try:
+            # Check if main disk is full
+            try:
+                home_stat = os.statvfs(os.path.expanduser("~"))
+                home_free_gb = home_stat.f_bavail * home_stat.f_frsize / (1024**3)
+            except:
+                home_free_gb = 0
+            
+            # If main disk has less than 5GB, use ephemeral disk if available
+            if home_free_gb < 5:
+                ephemeral_path = "/ephemeral"
+                if os.path.exists(ephemeral_path):
+                    cache_base = "/ephemeral/cache"
+                    os.makedirs(cache_base, exist_ok=True)
+                    
+                    # Set environment variables for various caches
+                    os.environ['TMPDIR'] = cache_base
+                    os.environ['HF_HOME'] = os.path.join(cache_base, 'huggingface')
+                    os.environ['TRANSFORMERS_CACHE'] = os.path.join(cache_base, 'transformers')
+                    os.environ['TORCH_HOME'] = os.path.join(cache_base, 'torch')
+                    
+                    # Create cache directories
+                    for env_var in ['HF_HOME', 'TRANSFORMERS_CACHE', 'TORCH_HOME']:
+                        os.makedirs(os.environ[env_var], exist_ok=True)
+                    
+                    self.logger.info(f"Using ephemeral disk for caches due to low disk space ({home_free_gb:.1f}GB)")
+                else:
+                    self.logger.warning(f"Main disk is low on space ({home_free_gb:.1f}GB) but no ephemeral disk found")
+            else:
+                self.logger.info(f"Sufficient disk space ({home_free_gb:.1f}GB)")
+                
+        except Exception as e:
+            self.logger.warning(f"Error setting up cache directories: {e}")
+    
+    def clear_all_caches(self):
+        """Manually clear all caches (GPU memory + HuggingFace cache)"""
+        print("🧹 Clearing all caches...")
+        self._clear_gpu_memory()
+        self._clear_hf_cache()
+        print("Cache clearing complete")
         
     def _measure_time(self, func, *args, **kwargs):
         """Helper to measure execution time of a function"""
@@ -129,6 +333,18 @@ class VLLMLatencyProfiler:
             'gpu_memory_total_mb': gpu.memoryTotal,
             'gpu_memory_percent': gpu.memoryUtil * 100
         }
+    
+    def _get_total_gpu_memory(self) -> float:
+        """Get total GPU memory in MB"""
+        try:
+            gpu = GPUtil.getGPUs()[0]
+            return gpu.memoryTotal
+        except (IndexError, Exception):
+            # Fallback: try torch.cuda if GPUtil fails
+            if torch.cuda.is_available():
+                return torch.cuda.get_device_properties(0).total_memory / (1024 * 1024)  # Convert bytes to MB
+            else:
+                return 24000  # 24GB fallback for systems without GPU detection
     
     @contextlib.contextmanager
     def _cuda_profiler(self, name: str):
@@ -354,7 +570,10 @@ class VLLMLatencyProfiler:
             
             # Estimate memory usage scaling
             input_tokens = len(self.tokenizer.encode(prompt)) if self.tokenizer else 100
-            memory_per_request = self.calculate_memory_requirements(input_tokens, max_tokens)['total_required_mb']
+            max_model_len = None
+            if hasattr(self, '_optimal_memory_settings'):
+                max_model_len = self._optimal_memory_settings['max_model_len']
+            memory_per_request = self.calculate_memory_requirements(input_tokens, max_tokens, max_model_len)['total_required_mb']
             total_memory_mb = memory_per_request * batch_size
             
             result = {
@@ -418,7 +637,26 @@ class VLLMLatencyProfiler:
         try:
             from vllm import LLM
             def cold_start():
-                self.engine = LLM(model=self.model_name, gpu_memory_utilization=0.4, disable_log_stats=True)
+                # Use optimal memory settings if available
+                gpu_util = 0.4  # Default
+                max_model_len = None  # Let vLLM decide by default
+                
+                if hasattr(self, '_optimal_memory_settings'):
+                    gpu_util = self._optimal_memory_settings['gpu_memory_utilization']
+                    max_model_len = self._optimal_memory_settings['max_model_len']
+                    self.logger.info(f"Using optimal settings: GPU util={gpu_util:.2f}, max_len={max_model_len}")
+                
+                # Create vLLM engine with optimal settings
+                engine_kwargs = {
+                    'model': self.model_name,
+                    'gpu_memory_utilization': gpu_util,
+                    'disable_log_stats': True
+                }
+                
+                if max_model_len is not None:
+                    engine_kwargs['max_model_len'] = max_model_len
+                
+                self.engine = LLM(**engine_kwargs)
                 self.tokenizer = self.engine.get_tokenizer()
                 self.is_model_loaded = True
                 return True
@@ -576,35 +814,149 @@ class VLLMLatencyProfiler:
         
         return profile
     
-    def calculate_memory_requirements(self, seq_length: int, max_tokens: int = 100) -> Dict[str, float]:
+    def _get_model_config(self) -> Dict[str, any]:
+        """Get actual model configuration from model config"""
+        try:
+            # Primary method: Load config directly from transformers (fast and reliable)
+            from transformers import AutoConfig
+            config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=True)
+            
+            num_layers = getattr(config, 'num_hidden_layers', getattr(config, 'n_layer', 24))
+            num_heads = getattr(config, 'num_attention_heads', getattr(config, 'n_head', 16))
+            hidden_size = getattr(config, 'hidden_size', getattr(config, 'n_embd', 1024))
+            head_dim = hidden_size // num_heads
+            vocab_size = getattr(config, 'vocab_size', 50000)
+            
+            # More accurate parameter estimation for modern transformers
+            # Includes: embeddings, attention layers, MLP layers, layer norms, output head
+            embed_params = vocab_size * hidden_size  # Input embeddings
+            attention_params = num_layers * (4 * hidden_size * hidden_size)  # Q, K, V, O projections per layer
+            mlp_params = num_layers * (8 * hidden_size * hidden_size)  # Typical 4x expansion in MLP
+            norm_params = num_layers * 2 * hidden_size  # Layer norms (pre/post attention)
+            output_head_params = vocab_size * hidden_size  # Output projection
+            
+            total_params = embed_params + attention_params + mlp_params + norm_params + output_head_params
+            
+            return {
+                'params': total_params,
+                'num_layers': num_layers,
+                'num_heads': num_heads,
+                'head_dim': head_dim,
+                'hidden_size': hidden_size,
+                'vocab_size': vocab_size
+            }
+            
+        except Exception as e:
+            self.logger.warning(f"Could not load config from transformers: {e}. Trying vLLM engine config.")
+            
+            try:
+                # Fallback: Try to get config from vLLM engine if already loaded
+                if self.engine is None:
+                    # If engine not loaded, load it temporarily to get config
+                    self._profile_model_loading()
+                
+                if hasattr(self.engine, 'llm_engine') and hasattr(self.engine.llm_engine, 'model_config'):
+                    config = self.engine.llm_engine.model_config
+                    
+                    # Extract parameters from the actual config
+                    num_layers = getattr(config, 'num_hidden_layers', getattr(config, 'n_layer', 24))
+                    num_heads = getattr(config, 'num_attention_heads', getattr(config, 'n_head', 16))
+                    hidden_size = getattr(config, 'hidden_size', getattr(config, 'n_embd', 1024))
+                    head_dim = hidden_size // num_heads
+                    vocab_size = getattr(config, 'vocab_size', 50000)
+                    
+                    # Estimate parameters similar to transformers approach
+                    embed_params = vocab_size * hidden_size
+                    attention_params = num_layers * (4 * hidden_size * hidden_size)
+                    mlp_params = num_layers * (8 * hidden_size * hidden_size)
+                    norm_params = num_layers * 2 * hidden_size
+                    output_head_params = vocab_size * hidden_size
+                    
+                    total_params = embed_params + attention_params + mlp_params + norm_params + output_head_params
+                    
+                    return {
+                        'params': total_params,
+                        'num_layers': num_layers,
+                        'num_heads': num_heads,
+                        'head_dim': head_dim,
+                        'hidden_size': hidden_size,
+                        'vocab_size': vocab_size
+                    }
+                
+            except Exception as e2:
+                self.logger.warning(f"Could not extract config from vLLM engine: {e2}. Using fallback estimates.")
+            
+            # Final fallback to reasonable defaults
+            return {
+                'params': 1e9,  # 1B default
+                'num_layers': 24,
+                'num_heads': 16,
+                'head_dim': 64,
+                'hidden_size': 1024,
+                'vocab_size': 50000
+            }
+    
+    def calculate_memory_requirements(self, seq_length: int, max_tokens: int = 100, max_model_len: int = None) -> Dict[str, float]:
         """Calculate dynamic memory requirements based on model and sequence parameters"""
-        # Model parameters (distilgpt2 has ~82M parameters)
-        model_params = 82e6
-        param_size_mb = model_params * 2 / 1e6  # 2 bytes per param (FP16)
+        # Get model-specific parameters from actual config
+        model_config = self._get_model_config()
         
-        # KV cache size calculation
-        # For transformer: batch_size * num_layers * 2 * num_heads * head_dim * seq_len * bytes_per_element
-        num_layers = 6  # distilgpt2
-        num_heads = 12
-        head_dim = 64
-        batch_size = 1
+        # Use provided max_model_len or determine from model config
+        if max_model_len is None:
+            # Try to get from model config, fallback to reasonable defaults
+            max_model_len = getattr(self, '_max_model_len', None)
+            if max_model_len is None:
+                try:
+                    from transformers import AutoConfig
+                    config = AutoConfig.from_pretrained(self.model_name, trust_remote_code=True)
+                    max_model_len = getattr(config, 'max_position_embeddings', 
+                                          getattr(config, 'max_sequence_length', 8192))
+                except:
+                    max_model_len = 8192  # Conservative fallback
+        
+        # Model parameters memory (using bfloat16 = 2 bytes per param)
+        param_size_mb = model_config['params'] * 2 / 1e6  
+        
+        # CRITICAL: vLLM allocates KV cache for max_model_len, not actual sequence length
+        # This is the key insight - vLLM pre-allocates based on maximum possible sequence length
+        kv_cache_mb_max = (1 * model_config['num_layers'] * 2 * 
+                          model_config['num_heads'] * model_config['head_dim'] * 
+                          max_model_len * 2) / 1e6  # 2 bytes for bfloat16
+        
+        # Actual KV cache used for this request
         total_seq_len = seq_length + max_tokens
+        kv_cache_mb_actual = (1 * model_config['num_layers'] * 2 * 
+                             model_config['num_heads'] * model_config['head_dim'] * 
+                             total_seq_len * 2) / 1e6  # 2 bytes for bfloat16
         
-        kv_cache_mb = (batch_size * num_layers * 2 * num_heads * head_dim * 
-                      total_seq_len * 2) / 1e6  # 2 bytes for FP16
+        # Additional memory for activations and intermediate computations
+        # This scales with actual sequence length, not max_model_len
+        attention_scores_mb = (model_config['num_heads'] * total_seq_len * total_seq_len * 2) / 1e6
+        mlp_intermediate_mb = (total_seq_len * model_config['hidden_size'] * 4 * 2) / 1e6  # 4x expansion in MLP
+        activation_mb = attention_scores_mb + mlp_intermediate_mb
         
-        # Additional memory for activations (rough estimate)
-        activation_mb = seq_length * 768 * 2 / 1e6  # hidden_size * bytes
+        # Buffer and overhead (typically 15-20% of base memory)
+        base_memory_mb = param_size_mb + kv_cache_mb_max + activation_mb
+        overhead_mb = base_memory_mb * 0.2  # 20% overhead for buffers and misc
         
-        total_required_mb = param_size_mb + kv_cache_mb + activation_mb
+        # Total memory required by vLLM (what it actually allocates)
+        total_required_mb = param_size_mb + kv_cache_mb_max + activation_mb + overhead_mb
+        
+        # Memory utilization efficiency
+        kv_efficiency = kv_cache_mb_actual / kv_cache_mb_max if kv_cache_mb_max > 0 else 0
         
         return {
             'model_params_mb': param_size_mb,
-            'kv_cache_mb': kv_cache_mb,
+            'kv_cache_allocated_mb': kv_cache_mb_max,  # What vLLM allocates
+            'kv_cache_used_mb': kv_cache_mb_actual,    # What we actually use
+            'kv_efficiency': kv_efficiency,            # Usage efficiency
             'activation_mb': activation_mb,
+            'overhead_mb': overhead_mb,
             'total_required_mb': total_required_mb,
             'seq_length': seq_length,
-            'max_tokens': max_tokens
+            'max_tokens': max_tokens,
+            'max_model_len': max_model_len,
+            'estimated_params': model_config['params']
         }
     
     def _profile_memory_operations(self, seq_length: int = 100, max_tokens: int = 100) -> Dict[str, float]:
@@ -612,7 +964,10 @@ class VLLMLatencyProfiler:
         profile = {}
         
         # Calculate memory requirements
-        memory_req = self.calculate_memory_requirements(seq_length, max_tokens)
+        max_model_len = None
+        if hasattr(self, '_optimal_memory_settings'):
+            max_model_len = self._optimal_memory_settings['max_model_len']
+        memory_req = self.calculate_memory_requirements(seq_length, max_tokens, max_model_len)
         profile.update(memory_req)
         
         # GPU memory allocation/deallocation - scales with required memory
@@ -702,7 +1057,7 @@ class VLLMLatencyProfiler:
             
             # Memory Requirements
             model_params_mb=memory_profile['model_params_mb'],
-            kv_cache_mb=memory_profile['kv_cache_mb'],
+            kv_cache_mb=memory_profile.get('kv_cache_allocated_mb', memory_profile.get('kv_cache_mb', 0)),
             activation_mb=memory_profile['activation_mb'],
             total_required_mb=memory_profile['total_required_mb'],
             
@@ -811,9 +1166,10 @@ class VLLMLatencyProfiler:
         if save_dir is None:
             save_dir = "latency_data"
         
-        # Create run folder with timestamp
+        # Create run folder with model name and timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = os.path.join(save_dir, f"run_{timestamp}")
+        clean_model_name = self._get_clean_model_name()
+        run_dir = os.path.join(save_dir, f"{clean_model_name}_run_{timestamp}")
         os.makedirs(run_dir, exist_ok=True)
         
         # Prepare data for scaling analysis (excluding model loading since it doesn't scale with prompt size)
@@ -1285,9 +1641,10 @@ class VLLMLatencyProfiler:
         if save_dir is None:
             save_dir = "latency_data"
         
-        # Create run folder with timestamp
+        # Create run folder with model name and timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = os.path.join(save_dir, f"batch_analysis_{timestamp}")
+        clean_model_name = self._get_clean_model_name()
+        run_dir = os.path.join(save_dir, f"{clean_model_name}_batch_analysis_{timestamp}")
         os.makedirs(run_dir, exist_ok=True)
         
         # Extract data
@@ -1482,6 +1839,22 @@ Recommendations:
         print(f"Max tokens per generation: {max_tokens}")
         print("=" * 50)
         
+        # Clear caches before starting analysis
+        self._clear_hf_cache()
+        self._clear_gpu_memory()
+        
+        # Calculate optimal memory settings to avoid OOM
+        print("Calculating optimal memory settings...")
+        memory_settings = self._calculate_optimal_memory_settings(prompt_sizes, max_tokens)
+        print(f"Optimal GPU utilization: {memory_settings['gpu_memory_utilization']:.2f}")
+        print(f"Max model length: {memory_settings['max_model_len']:,} tokens")
+        print(f"Estimated memory usage: {memory_settings['estimated_memory_gb']:.1f} GB")
+        print(f"Available GPU memory: {memory_settings['available_memory_gb']:.1f} GB / {memory_settings['total_memory_gb']:.1f} GB")
+        print("=" * 50)
+        
+        # Store settings for use in model loading
+        self._optimal_memory_settings = memory_settings
+        
         # Run profiling
         profiles = self.profile_multiple_prompt_sizes(base_prompt, prompt_sizes, max_tokens)
         
@@ -1537,6 +1910,9 @@ Recommendations:
             print(f"Memory bandwidth utilization: {mem_bandwidth:.1f}%")
             print(f"Cache miss rate: {cache_miss:.1f}%")
 
+        # Clean up after analysis
+        self._clear_gpu_memory()
+        
         return profiles, df
     
     def run_batch_analysis(self, base_prompt: str = "Explain machine learning concepts", batch_sizes: List[int] = None):

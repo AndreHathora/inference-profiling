@@ -40,33 +40,59 @@ except Exception as e:
     sys.exit(1)
 
 def main():
-    """Run comprehensive vLLM latency analysis with distilgpt2"""
+    """Run comprehensive vLLM latency analysis with specified model"""
+    import argparse
     
-    # Initialize profiler with distilgpt2 for fast profiling
-    profiler = VLLMLatencyProfiler("distilgpt2")
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Run comprehensive vLLM latency analysis')
+    parser.add_argument('--model', '-m', type=str, default='distilgpt2',
+                       help='Hugging Face model name (default: distilgpt2)')
+    parser.add_argument('--prompt', '-p', type=str, default='Explain machine learning concepts',
+                       help='Test prompt for analysis (default: "Explain machine learning concepts")')
+    parser.add_argument('--max-tokens', type=int, default=100,
+                       help='Maximum tokens to generate (default: 100)')
+    parser.add_argument('--clear-cache', action='store_true',
+                       help='Clear all caches before running analysis')
     
-    print("=== vLLM Comprehensive Latency Analysis (DistilGPT2) ===\n")
+    args = parser.parse_args()
+    
+    # Initialize profiler with specified model
+    profiler = VLLMLatencyProfiler(args.model)
+    
+    # Clear caches if requested
+    if args.clear_cache:
+        profiler.clear_all_caches()
+    
+    print(f"=== vLLM Comprehensive Latency Analysis ({args.model}) ===\n")
+    print(f"Model: {args.model}")
+    print(f"Prompt: '{args.prompt}'")
+    print(f"Max tokens: {args.max_tokens}")
     print("Running comprehensive analysis across multiple prompt sizes...")
-    print("This will generate 6 individual plots in a timestamped run folder.")
+    print("This will generate 9 individual plots + CSV data in a timestamped run folder.")
     print()
     
     try:
-        # Run the comprehensive analysis that generates the 6 plots
-        profiles, df = profiler.run_comprehensive_analysis("Explain machine learning concepts")
+        # Run the comprehensive analysis that generates the plots
+        profiles, df = profiler.run_comprehensive_analysis(args.prompt)
         
         print(f"\n{'='*60}")
-        print("Analysis done.")
+        print("Analysis complete!")
         print(f"{'='*60}")
-        print("6 individual plots generated:")
+        print("9 plots + CSV data generated:")
         print("  01_component_distribution.png - Runtime component pie chart")
         print("  02_component_scaling_comparison.png - All components scaling together")
         print("  03_memory_requirements.png - Memory vs prompt size")
         print("  04_optimization_opportunities.png - Optimization targets")
         print("  05_attention_kernel_breakdown.png - Deep attention analysis")
         print("  06_decode_kernel_breakdown.png - Deep decode analysis")
+        print("  07_batch_latency_throughput.png - Batch latency vs throughput")
+        print("  08_batch_memory_scaling.png - Memory scaling with batch size")
+        print("  09_batch_efficiency_analysis.png - Batch efficiency analysis")
+        print("  batch_analysis_data.csv - Complete batch metrics dataset")
+        print("  batch_analysis_summary.csv - Key insights summary")
         print()
         print("Model loading time excluded from plots (too dominant)")
-        print("All plots saved in timestamped run folder under latency_data/")
+        print("All files saved in timestamped run folder under latency_data/")
         
     except Exception as e:
         print(f"Error running comprehensive analysis: {e}")
