@@ -136,3 +136,7 @@ dmypy.json
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+.cursor/
+.cursorrules
+.cursor/rules
