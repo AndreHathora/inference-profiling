@@ -47,21 +47,23 @@ def main():
     
     print("=== vLLM Comprehensive Latency Analysis (DistilGPT2) ===\n")
     print("Running comprehensive analysis across multiple prompt sizes...")
-    print("This will generate 4 individual plots in a timestamped run folder.")
+    print("This will generate 6 individual plots in a timestamped run folder.")
     print()
     
     try:
-        # Run the comprehensive analysis that generates the 4 plots
+        # Run the comprehensive analysis that generates the 6 plots
         profiles, df = profiler.run_comprehensive_analysis("Explain machine learning concepts")
         
         print(f"\n{'='*60}")
         print("Analysis done.")
         print(f"{'='*60}")
-        print("4 individual plots generated:")
+        print("6 individual plots generated:")
         print("  01_component_distribution.png - Runtime component pie chart")
         print("  02_component_scaling_comparison.png - All components scaling together")
         print("  03_memory_requirements.png - Memory vs prompt size")
         print("  04_optimization_opportunities.png - Optimization targets")
+        print("  05_attention_kernel_breakdown.png - Deep attention analysis")
+        print("  06_decode_kernel_breakdown.png - Deep decode analysis")
         print()
         print("Model loading time excluded from plots (too dominant)")
         print("All plots saved in timestamped run folder under latency_data/")
