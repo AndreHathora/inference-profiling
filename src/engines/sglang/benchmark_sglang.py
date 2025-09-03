@@ -6,11 +6,9 @@ import traceback
 from typing import List, Dict, Any, Optional
 from src.core.benchmark_core import BaseBenchmark
 
-# Set up debug logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-# Extensive debugging for SGLang import
 logger.info("=== SGLang Import Debug Start ===")
 logger.info(f"Python path: {sys.path}")
 logger.info(f"Current working directory: {os.getcwd()}")
@@ -19,17 +17,17 @@ try:
     logger.info("Attempting to import sglang...")
     from sglang.srt.entrypoints.engine import Engine
     SGLANG_AVAILABLE = True
-    logger.info("✅ SGLang successfully imported")
+    logger.info("SGLang successfully imported")
     logger.info(f"Engine class: {Engine}")
     logger.info(f"Engine module: {Engine.__module__}")
     logger.info(f"Engine attributes: {dir(Engine)}")
 except ImportError as ie:
-    logger.error(f"❌ SGLang ImportError: {ie}")
+    logger.error(f"SGLang ImportError: {ie}")
     logger.error(f"ImportError type: {type(ie)}")
     SGLANG_AVAILABLE = False
     Engine = None
 except Exception as e:
-    logger.error(f"❌ SGLang import failed with unexpected error: {e}")
+    logger.error(f"SGLang import failed with unexpected error: {e}")
     logger.error(f"Exception type: {type(e)}")
     logger.error(f"Exception args: {e.args}")
     logger.error(f"Exception traceback: {traceback.format_exc()}")
@@ -40,7 +38,6 @@ logger.info(f"Final SGLANG_AVAILABLE: {SGLANG_AVAILABLE}")
 logger.info(f"Final Engine: {Engine}")
 logger.info("=== SGLang Import Debug End ===")
 
-# Final debug check after everything is loaded
 logger.info("=== Final SGLang State Check ===")
 logger.info(f"SGLANG_AVAILABLE in globals(): {'SGLANG_AVAILABLE' in globals()}")
 if 'SGLANG_AVAILABLE' in globals():
@@ -71,7 +68,6 @@ class SGLangBenchmark(BaseBenchmark):
 
         logger.info(f"Super init completed. Engine attribute: {self.engine}")
 
-        # Debug global variable access
         logger.info("Checking SGLANG_AVAILABLE global variable...")
         try:
             sglang_available = globals().get('SGLANG_AVAILABLE', 'NOT_FOUND')
@@ -80,7 +76,6 @@ class SGLangBenchmark(BaseBenchmark):
             logger.error(f"Error accessing globals(): {e}")
             sglang_available = False
 
-        # Try direct access too
         try:
             direct_available = globals()['SGLANG_AVAILABLE'] if 'SGLANG_AVAILABLE' in globals() else 'NOT_IN_GLOBALS'
             logger.info(f"Direct globals()['SGLANG_AVAILABLE']: {direct_available}")
@@ -91,27 +86,26 @@ class SGLangBenchmark(BaseBenchmark):
         logger.info(f"Final sglang_available decision: {sglang_available}")
 
         if not sglang_available:
-            logger.error("❌ SGLang is not available - benchmark will use fallback mode")
-            logger.error("🔍 DIAGNOSIS: This is likely due to CUDA version compatibility issues")
-            logger.error("📋 CUDA Status:")
+            logger.error("SGLang is not available - benchmark will use fallback mode")
+            logger.error("DIAGNOSIS: This is likely due to CUDA version compatibility issues")
+            logger.error("CUDA Status:")
             try:
                 import torch
-                logger.error(f"   • PyTorch CUDA available: {torch.cuda.is_available()}")
+                logger.error(f"   PyTorch CUDA available: {torch.cuda.is_available()}")
                 if torch.cuda.is_available():
-                    logger.error(f"   • PyTorch CUDA version: {torch.version.cuda}")
-                    logger.error(f"   • GPU Device: {torch.cuda.get_device_name(0)}")
+                    logger.error(f"   PyTorch CUDA version: {torch.version.cuda}")
+                    logger.error(f"   GPU Device: {torch.cuda.get_device_name(0)}")
                 else:
-                    logger.error("   • PyTorch CUDA: NOT AVAILABLE")
+                    logger.error("   PyTorch CUDA: NOT AVAILABLE")
             except:
-                logger.error("   • PyTorch CUDA check failed")
+                logger.error("   PyTorch CUDA check failed")
 
-            logger.error("🔧 POSSIBLE SOLUTIONS:")
+            logger.error("POSSIBLE SOLUTIONS:")
             logger.error("   1. Install compatible CUDA toolkit (currently have nvcc 11.5)")
             logger.error("   2. Use PyTorch with CUDA 11.x instead of CUDA 12.x")
             logger.error("   3. Try CPU-only mode: set device='cpu' in SGLang config")
             logger.error("   4. Update SGLang to a version compatible with CUDA 12.x")
-            logger.error("⚠️ All SGLang operations will use mock inference (no real GPU usage)")
-            # Don't raise error, let the benchmark continue with fallback behavior
+            logger.error("All SGLang operations will use mock inference (no real GPU usage)")
 
         logger.info("=== SGLangBenchmark __init__ Debug End ===")
 
@@ -119,7 +113,6 @@ class SGLangBenchmark(BaseBenchmark):
         logger.info("=== SGLang warmup Debug Start ===")
         logger.info(f"Starting SGLang warmup with prompt: '{prompt[:50]}...', num_warmup: {num_warmup}")
 
-        # Check if SGLang is available (handle variable scope issues)
         logger.info("Checking SGLANG_AVAILABLE for warmup...")
         try:
             sglang_available = globals().get('SGLANG_AVAILABLE', 'GLOBAL_NOT_FOUND')
@@ -132,12 +125,12 @@ class SGLangBenchmark(BaseBenchmark):
 
         try:
             if not sglang_available:
-                logger.warning("🟡 SGLang not available, using mock warmup (NO GPU USAGE)")
-                logger.warning("💡 This means the resource utilization plot will show 0% GPU usage")
-                logger.warning("💡 The benchmark is simulating inference without actual GPU computation")
+                logger.warning("SGLang not available, using mock warmup (NO GPU USAGE)")
+                logger.warning("This means the resource utilization plot will show 0% GPU usage")
+                logger.warning("The benchmark is simulating inference without actual GPU computation")
                 import time
-                time.sleep(0.1 * num_warmup)  # Mock warmup delay
-                logger.info("✅ SGLang mock warmup completed successfully")
+                time.sleep(0.1 * num_warmup)
+                logger.info("SGLang mock warmup completed successfully")
                 logger.info("=== SGLang warmup Debug End ===")
                 return
 
@@ -155,23 +148,20 @@ class SGLangBenchmark(BaseBenchmark):
                     logger.info(f"Engine kwargs: {engine_kwargs}")
 
                     try:
-                        logger.info(f"🚀 Attempting to create SGLang Engine with kwargs: {engine_kwargs}")
+                        logger.info(f"Attempting to create SGLang Engine with kwargs: {engine_kwargs}")
                         
-                        # Debug environment before engine creation
-                        logger.info("🔍 Environment check before engine creation:")
+                        logger.info("Environment check before engine creation:")
                         logger.info(f"  CUDA_HOME: {os.environ.get('CUDA_HOME', 'NOT_SET')}")
                         logger.info(f"  PATH (first 200 chars): {os.environ.get('PATH', 'NOT_SET')[:200]}")
                         logger.info(f"  LD_LIBRARY_PATH (first 200 chars): {os.environ.get('LD_LIBRARY_PATH', 'NOT_SET')[:200]}")
                         
-                        # Debug PyTorch CUDA
                         import torch
                         logger.info(f"  PyTorch CUDA available: {torch.cuda.is_available()}")
                         if torch.cuda.is_available():
                             logger.info(f"  PyTorch CUDA version: {torch.version.cuda}")
                             logger.info(f"  GPU device: {torch.cuda.get_device_name(0)}")
                         
-                        # Debug SGLang imports before creating engine
-                        logger.info("🔍 Testing SGLang components before engine creation:")
+                        logger.info("Testing SGLang components before engine creation:")
                         try:
                             import sglang
                             logger.info(f"  sglang module: {sglang}")
@@ -184,48 +174,45 @@ class SGLangBenchmark(BaseBenchmark):
                             logger.info(f"  Engine __init__ signature: {DebugEngine.__init__.__annotations__ if hasattr(DebugEngine.__init__, '__annotations__') else 'No annotations'}")
                             
                         except Exception as import_e:
-                            logger.error(f"❌ Import test failed: {import_e}")
+                            logger.error(f"Import test failed: {import_e}")
                             logger.error(f"Import traceback: {traceback.format_exc()}")
                         
-                        logger.info("🔍 About to create Engine instance...")
+                        logger.info("About to create Engine instance...")
                         self.engine = Engine(**engine_kwargs)
-                        logger.info("✅ SGLang engine initialized successfully")
+                        logger.info("SGLang engine initialized successfully")
                         
-                        # Test a basic operation
-                        logger.info("🔍 Testing basic engine operation...")
+                        logger.info("Testing basic engine operation...")
                         try:
                             logger.info(f"Engine type: {type(self.engine)}")
                             logger.info(f"Engine attributes: {[attr for attr in dir(self.engine) if not attr.startswith('_')]}")
                         except Exception as test_e:
-                            logger.error(f"❌ Basic engine test failed: {test_e}")
+                            logger.error(f"Basic engine test failed: {test_e}")
                         
                     except Exception as e:
-                        logger.error(f"❌ Failed to initialize SGLang engine: {e}")
+                        logger.error(f"Failed to initialize SGLang engine: {e}")
                         logger.error(f"Exception type: {type(e)}")
                         logger.error(f"Exception args: {e.args}")
                         logger.error(f"Full exception traceback: {traceback.format_exc()}")
                         logger.error(f"Engine kwargs used: {engine_kwargs}")
                         
-                        # Try to get more specific error info
                         error_msg = str(e)
                         if "CUDA" in error_msg or "cuda" in error_msg:
-                            logger.error("🔍 CUDA-related error detected:")
-                            logger.error("   • SGLang engine creation failed with CUDA error")
-                            logger.error("   • This could be CUDA version mismatch or missing CUDA libraries")
+                            logger.error("CUDA-related error detected:")
+                            logger.error("   SGLang engine creation failed with CUDA error")
+                            logger.error("   This could be CUDA version mismatch or missing CUDA libraries")
                         elif "undefined symbol" in error_msg:
-                            logger.error("🔍 Undefined symbol error detected:")
-                            logger.error("   • This indicates ABI compatibility issues")
-                            logger.error("   • SGLang was likely compiled with different CUDA/C++ versions")
+                            logger.error("Undefined symbol error detected:")
+                            logger.error("   This indicates ABI compatibility issues")
+                            logger.error("   SGLang was likely compiled with different CUDA/C++ versions")
                         else:
-                            logger.error("🔍 Other engine creation error:")
-                            logger.error(f"   • Error message: {error_msg}")
+                            logger.error("Other engine creation error:")
+                            logger.error(f"   Error message: {error_msg}")
                             
-                        logger.warning("🔄 SGLang CUDA error detected, switching to fallback mode")
+                        logger.warning("SGLang CUDA error detected, switching to fallback mode")
                         logger.warning(f"Setting globals()['SGLANG_AVAILABLE'] = False")
                         globals()['SGLANG_AVAILABLE'] = False
                         self.engine = None
                         logger.info("Fallback mode activated - returning from warmup")
-                        # Don't raise error, let it fall back to mock behavior
                         logger.info("=== SGLang warmup Debug End (with engine creation error) ===")
                         return
 
@@ -250,7 +237,6 @@ class SGLangBenchmark(BaseBenchmark):
         logger.info(f"Starting SGLang inference with prompt: '{prompt[:50]}...'")
         start_time = time.perf_counter()
 
-        # Check if SGLang is available (handle variable scope issues)
         logger.info("Checking SGLANG_AVAILABLE for inference...")
         try:
             sglang_available = globals().get('SGLANG_AVAILABLE', 'GLOBAL_NOT_FOUND')
@@ -264,10 +250,9 @@ class SGLangBenchmark(BaseBenchmark):
 
         try:
             if not sglang_available:
-                logger.warning("🟡 SGLang not available, using mock inference (NO GPU USAGE)")
-                logger.warning("💡 This means the resource utilization plot will show 0% GPU usage")
-                logger.warning("💡 The benchmark is simulating inference without actual GPU computation")
-                # Mock inference time based on prompt length
+                logger.warning("SGLang not available, using mock inference (NO GPU USAGE)")
+                logger.warning("This means the resource utilization plot will show 0% GPU usage")
+                logger.warning("The benchmark is simulating inference without actual GPU computation")
                 prompt_tokens = len(prompt.split())
                 mock_latency = 0.02 + (prompt_tokens * 0.002)
                 logger.info(f"Mock latency calculation: 0.02 + ({prompt_tokens} * 0.002) = {mock_latency}")
@@ -275,11 +260,10 @@ class SGLangBenchmark(BaseBenchmark):
 
                 end_time = time.perf_counter()
                 mock_output = f"SGLang mock response to: {prompt[:30]}..."
-                logger.info(f"✅ Mock inference completed. Output length: {len(mock_output)}, latency: {end_time - start_time:.4f}s")
+                logger.info(f"Mock inference completed. Output length: {len(mock_output)}, latency: {end_time - start_time:.4f}s")
                 logger.info("=== SGLang inference Debug End ===")
                 return mock_output, end_time - start_time
 
-            # Ensure engine is initialized
             if self.engine is None:
                 logger.info("Engine not initialized, initializing now")
                 engine_kwargs = {
@@ -292,29 +276,27 @@ class SGLangBenchmark(BaseBenchmark):
 
                 logger.info(f"Initializing engine with kwargs: {engine_kwargs}")
                 try:
-                    logger.info(f"🚀 Attempting to create SGLang Engine during inference with kwargs: {engine_kwargs}")
+                    logger.info(f"Attempting to create SGLang Engine during inference with kwargs: {engine_kwargs}")
                     self.engine = Engine(**engine_kwargs)
-                    logger.info("✅ Engine initialized successfully")
+                    logger.info("Engine initialized successfully")
                 except Exception as e:
-                    logger.error(f"❌ Failed to initialize SGLang engine during inference: {e}")
+                    logger.error(f"Failed to initialize SGLang engine during inference: {e}")
                     logger.error(f"Exception type: {type(e)}")
                     logger.error(f"Exception args: {e.args}")
-                    logger.warning("🔄 SGLang CUDA error detected during inference, switching to fallback mode")
+                    logger.warning("SGLang CUDA error detected during inference, switching to fallback mode")
                     logger.warning(f"Setting globals()['SGLANG_AVAILABLE'] = False")
                     globals()['SGLANG_AVAILABLE'] = False
                     self.engine = None
-                    # Fall back to mock inference
                     logger.info("Using fallback mock inference...")
                     mock_latency = 0.02 + (prompt_tokens * 0.002)
                     logger.info(f"Mock latency calculation: 0.02 + ({prompt_tokens} * 0.002) = {mock_latency}")
                     time.sleep(mock_latency)
                     end_time = time.perf_counter()
                     mock_output = f"SGLang mock response to: {prompt[:30]}..."
-                    logger.info(f"✅ Fallback mock inference completed. Output length: {len(mock_output)}, latency: {end_time - start_time:.4f}s")
+                    logger.info(f"Fallback mock inference completed. Output length: {len(mock_output)}, latency: {end_time - start_time:.4f}s")
                     logger.info("=== SGLang inference Debug End (with CUDA error) ===")
                     return mock_output, end_time - start_time
 
-            # Check if engine has generate method
             if not hasattr(self.engine, 'generate'):
                 logger.error(f"Engine object {type(self.engine)} does not have 'generate' method")
                 logger.error(f"Engine attributes: {dir(self.engine) if self.engine else 'None'}")
@@ -356,7 +338,6 @@ class SGLangBenchmark(BaseBenchmark):
         for i, prompt in enumerate(prompts):
             logger.info(f"Processing prompt {i+1}/{len(prompts)}")
             if not SGLANG_AVAILABLE:
-                # Mock concurrent inference
                 prompt_tokens = len(prompt.split())
                 mock_latency = 0.02 + (prompt_tokens * 0.002)
                 import time
