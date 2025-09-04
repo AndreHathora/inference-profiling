@@ -147,8 +147,8 @@ class VLLMLatencyProfiler:
             model_max_positions = 4096  # Conservative fallback
         
         # Calculate max_model_len that fits in available memory
-        # KV cache formula: 2 * num_layers * num_heads * head_dim * max_model_len * 2 bytes
-        kv_cache_per_token = (2 * model_config['num_layers'] * model_config['num_heads'] * 
+        # KV cache formula for GQA: 2 * num_layers * num_kv_heads * head_dim * max_model_len * 2 bytes
+        kv_cache_per_token = (2 * model_config['num_layers'] * model_config['num_kv_heads'] * 
                              model_config['head_dim'] * 2) / (1024**3)
         
         if kv_cache_per_token > 0:
@@ -823,6 +823,18 @@ class VLLMLatencyProfiler:
             
             num_layers = getattr(config, 'num_hidden_layers', getattr(config, 'n_layer', 24))
             num_heads = getattr(config, 'num_attention_heads', getattr(config, 'n_head', 16))
+            
+            # Handle GQA - get num_key_value_heads if available, default to MHA
+            num_kv_heads = getattr(config, 'num_key_value_heads', num_heads)
+            
+            # Log attention mechanism detection
+            if num_kv_heads == num_heads:
+                self.logger.info(f"Detected Multi-Head Attention (MHA): {num_heads} query heads, {num_kv_heads} KV heads")
+            elif num_kv_heads == 1:
+                self.logger.info(f"Detected Multi-Query Attention (MQA): {num_heads} query heads, {num_kv_heads} KV head")
+            else:
+                self.logger.info(f"Detected Grouped Query Attention (GQA): {num_heads} query heads, {num_kv_heads} KV heads (ratio: {num_heads//num_kv_heads}:1)")
+            
             hidden_size = getattr(config, 'hidden_size', getattr(config, 'n_embd', 1024))
             head_dim = hidden_size // num_heads
             vocab_size = getattr(config, 'vocab_size', 50000)
@@ -841,6 +853,7 @@ class VLLMLatencyProfiler:
                 'params': total_params,
                 'num_layers': num_layers,
                 'num_heads': num_heads,
+                'num_kv_heads': num_kv_heads,
                 'head_dim': head_dim,
                 'hidden_size': hidden_size,
                 'vocab_size': vocab_size
@@ -861,6 +874,10 @@ class VLLMLatencyProfiler:
                     # Extract parameters from the actual config
                     num_layers = getattr(config, 'num_hidden_layers', getattr(config, 'n_layer', 24))
                     num_heads = getattr(config, 'num_attention_heads', getattr(config, 'n_head', 16))
+                    
+                    # Handle GQA - get num_key_value_heads if available, default to MHA
+                    num_kv_heads = getattr(config, 'num_key_value_heads', num_heads)
+                    
                     hidden_size = getattr(config, 'hidden_size', getattr(config, 'n_embd', 1024))
                     head_dim = hidden_size // num_heads
                     vocab_size = getattr(config, 'vocab_size', 50000)
@@ -878,6 +895,7 @@ class VLLMLatencyProfiler:
                         'params': total_params,
                         'num_layers': num_layers,
                         'num_heads': num_heads,
+                        'num_kv_heads': num_kv_heads,
                         'head_dim': head_dim,
                         'hidden_size': hidden_size,
                         'vocab_size': vocab_size
@@ -891,13 +909,18 @@ class VLLMLatencyProfiler:
                 'params': 1e9,  # 1B default
                 'num_layers': 24,
                 'num_heads': 16,
+                'num_kv_heads': 16,  # Default to MHA if unknown
                 'head_dim': 64,
                 'hidden_size': 1024,
                 'vocab_size': 50000
             }
     
     def calculate_memory_requirements(self, seq_length: int, max_tokens: int = 100, max_model_len: int = None) -> Dict[str, float]:
-        """Calculate dynamic memory requirements based on model and sequence parameters"""
+        """Calculate dynamic memory requirements based on model and sequence parameters
+        
+        Now properly handles GQA (Grouped Query Attention) by using num_kv_heads for KV cache calculations
+        instead of num_heads, which significantly reduces memory estimates for GQA models.
+        """
         # Get model-specific parameters from actual config
         model_config = self._get_model_config()
         
@@ -919,14 +942,15 @@ class VLLMLatencyProfiler:
         
         # CRITICAL: vLLM allocates KV cache for max_model_len, not actual sequence length
         # This is the key insight - vLLM pre-allocates based on maximum possible sequence length
+        # Using num_kv_heads for GQA (Grouped Query Attention)
         kv_cache_mb_max = (1 * model_config['num_layers'] * 2 * 
-                          model_config['num_heads'] * model_config['head_dim'] * 
+                          model_config['num_kv_heads'] * model_config['head_dim'] * 
                           max_model_len * 2) / 1e6  # 2 bytes for bfloat16
         
         # Actual KV cache used for this request
         total_seq_len = seq_length + max_tokens
         kv_cache_mb_actual = (1 * model_config['num_layers'] * 2 * 
-                             model_config['num_heads'] * model_config['head_dim'] * 
+                             model_config['num_kv_heads'] * model_config['head_dim'] * 
                              total_seq_len * 2) / 1e6  # 2 bytes for bfloat16
         
         # Additional memory for activations and intermediate computations
@@ -940,7 +964,10 @@ class VLLMLatencyProfiler:
         overhead_mb = base_memory_mb * 0.2  # 20% overhead for buffers and misc
         
         # Total memory required by vLLM (what it actually allocates)
-        total_required_mb = param_size_mb + kv_cache_mb_max + activation_mb + overhead_mb
+        total_allocated_mb = param_size_mb + kv_cache_mb_max + activation_mb + overhead_mb
+        
+        # Total memory actually used for this specific request
+        total_used_mb = param_size_mb + kv_cache_mb_actual + activation_mb
         
         # Memory utilization efficiency
         kv_efficiency = kv_cache_mb_actual / kv_cache_mb_max if kv_cache_mb_max > 0 else 0
@@ -952,7 +979,8 @@ class VLLMLatencyProfiler:
             'kv_efficiency': kv_efficiency,            # Usage efficiency
             'activation_mb': activation_mb,
             'overhead_mb': overhead_mb,
-            'total_required_mb': total_required_mb,
+            'total_required_mb': total_used_mb,        # Use actual usage, not allocated
+            'total_allocated_mb': total_allocated_mb,  # Keep allocated for reference
             'seq_length': seq_length,
             'max_tokens': max_tokens,
             'max_model_len': max_model_len,
@@ -1057,7 +1085,7 @@ class VLLMLatencyProfiler:
             
             # Memory Requirements
             model_params_mb=memory_profile['model_params_mb'],
-            kv_cache_mb=memory_profile.get('kv_cache_allocated_mb', memory_profile.get('kv_cache_mb', 0)),
+            kv_cache_mb=memory_profile.get('kv_cache_used_mb', memory_profile.get('kv_cache_mb', 0)),
             activation_mb=memory_profile['activation_mb'],
             total_required_mb=memory_profile['total_required_mb'],
             

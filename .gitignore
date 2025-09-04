@@ -138,3 +138,7 @@ ehthumbs.db
 Thumbs.db
 
 cursor/*
+
+# claude code deps
+CLAUDE.md
+.mcp.json

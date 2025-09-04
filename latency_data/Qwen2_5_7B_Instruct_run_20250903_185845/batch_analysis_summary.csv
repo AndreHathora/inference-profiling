@@ -1,9 +1,0 @@
-Metric,Value,Unit
-Max Request Throughput,29.6,req/s
-Max Token Throughput,2961.7,tok/s
-Min Latency,33.8,ms/request
-Peak Memory Usage,347342.5,MB
-Optimal Batch Size,1,requests
-Optimal Efficiency Score,1.027,req/s per batch unit
-Throughput Scaling Factor,28.8,x improvement
-Max Latency Penalty,1.0,x increase
