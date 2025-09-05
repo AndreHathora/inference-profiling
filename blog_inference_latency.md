@@ -2,15 +2,15 @@
 
 ## Why?
 
-Large language model deployment has become a critical capability for modern applications, yet inference optimization remains poorly understood across the industry. While significant resources are allocated to model training, the engineering challenges of production inference often determine deployment success or failure.
+Large language model deployment has become a growing necessity for modern applications, yet inference optimization remains sparsely understood across the industry. While significant resources are allocated to model training, the engineering challenges of production inference often determine deployment successes.
 
 Latency directly correlates with user experience metrics and operational expenditure. However, the underlying factors contributing to inference latency form a complex, interdependent system. Engineering teams consistently face fundamental questions: Where do performance bottlenecks actually occur? Which optimization strategies deliver measurable improvements? How do hardware configurations impact real-world performance characteristics?
 
-This analysis presents empirical findings from comprehensive benchmarking designed to address these questions systematically.
+Let's dive into the analysis.
 
 ## Experimental Configuration
 
-All benchmarks were conducted on the NVIDIA H100 80GB PCIe variant. Note: The SXM5 variant offers 3.35 TB/s bandwidth, 16,896 CUDA cores, and a peak TDP 700W (double the PCIe variant's peak TDP).
+All benchmarks were conducted on the NVIDIA H100 80GB PCIe variant. Note: The SXM5 variant offers 3.35 TB/s bandwidth via HBM3, 16,896 CUDA cores, and a peak TDP 700W (double the PCIe variant's TDP).
 
 Test hardware specifications:
 
@@ -27,7 +27,7 @@ Three models were chosen based on their popularity in the last year. We explore 
 
 Before diving into specific models, it's helpful to understand the three main memory components:
 
-- **Model Parameters**: The weights and biases stored in the model (e.g., 7B parameters × 2 bytes for BF16 = ~14GB)
+- **Model Parameters**: The weights and biases stored in the model (e.g., 7B parameters * 2 bytes for BF16 = ~14GB)
 - **Activations**: Intermediate computation results during forward pass (varies with batch size and sequence length)
 - **KV Cache**: Stores key-value pairs from attention layers to avoid recomputation during autoregressive generation
 
@@ -37,12 +37,12 @@ The KV cache size calculation depends on the attention mechanism used:
 
 **For Multi-Head Attention (MHA):**
 ```
-KV Cache Size = batch_size × sequence_length × num_layers × num_heads × head_dim × 2 × dtype_size
+KV Cache Size = batch_size * sequence_length * num_layers * num_heads * head_dim * 2 * dtype_size
 ```
 
 **For Grouped Query Attention (GQA):**
 ```
-KV Cache Size = batch_size × sequence_length × num_layers × num_kv_heads × head_dim × 2 × dtype_size
+KV Cache Size = batch_size * sequence_length * num_layers * num_kv_heads * head_dim * 2 * dtype_size
 ```
 
 **Key Differences:**
