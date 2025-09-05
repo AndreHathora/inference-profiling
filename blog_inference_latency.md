@@ -144,7 +144,7 @@ In practice, vLLM’s output processing involves four key stages:
 3. **Text formatting and validation**: Output strings undergo post-processing including special token removal, whitespace normalization, and stop sequence detection
 4. **Response streaming**: In streaming mode, partial outputs are immediately sent to clients as `data: {...}` chunks, while non-streaming mode accumulates tokens until request completion
 
-While lightweight compared to GPU inference, these sequential CPU-bound operations can still underutilize GPU resources, especially during tokenization and detokenization. Recent proposals suggest asynchronous tri-process collaboration—separating tokenization, inference, and detokenization into concurrent pipelines—to further improve throughput and GPU utilization.
+While lightweight compared to GPU inference, these sequential CPU-bound operations can still underutilize GPU resources, especially during tokenization and detokenization. Recent proposals suggest asynchronous tri-process collaboration which decouples tokenization, inference, and detokenization into concurrent pipelines, to further improve throughput and GPU utilization.
 
 ## Benchmark Results
 
