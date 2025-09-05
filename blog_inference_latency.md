@@ -86,7 +86,7 @@ We run a comprehensive benchmark catered around vLLM's inference engine that tar
 
 Model loading is an important component of cold-start latencies for LLM inference. Several key factors contribute to model loading times and present interesting optimization opportunities:
 
-**Memory Bandwidth Bottlenecks**: While we don't consider model loading in our benchmarks, since it is only a one time cost, it is still important to understand the breakdown. The Qwen 2.5 7B and DeepSeek R1 Distill models each require ~10.8 GB of GPU memory for their BF16 weights, while the GPT OSS 20B uses only ~10.6 GB due to its MXFP4 quantization format. Loading times can be broken down into the following steps:
+While we don't consider model loading in our benchmarks, since it is only a one time cost that ends up being dominated by request-based latencies, it is still important to understand the breakdown. The Qwen 2.5 7B and DeepSeek R1 Distill models each require ~10.8 GB of GPU memory for their BF16 weights, while the GPT OSS 20B uses only ~10.6 GB due to its MXFP4 quantization format. Loading times can be broken down into the following steps:
 
 1. **Storage Read**: Reading model weights from Disk into system RAM. Modern PCI-e 4.0 NVMe drives achieve in the order of ~3.5-7 GB/s sustained sequential reads, so transferring our ~10.8 GB safetensors files take approximately 1.5-3 seconds in a best case scenario, driven by sequentiality of the data and drive performance.
 
@@ -116,9 +116,86 @@ The prefill phase represents the computationally intensive stage of LLM inferenc
 3. **Memory allocation**: CUDA unified memory allocation via cudaMalloc with memory pool optimization to reduce allocation overhead
 4. **Tensor operations**: Optimized GEMM operations using cuBLAS libraries, with Tensor Core acceleration on H100 for mixed-precision (BF16) matrix multiplications
 
-Despite being traditionally viewed as the primary bottleneck, modern inference engines have heavily optimized these operations through Flash Attention, PagedAttention, and efficient CUDA kernel fusion, resulting in surprisingly low latency contributions in practice.
+Despite being traditionally viewed as the primary bottleneck, vLLM has revolutionized this phase through PagedAttention, which treats KV cache management like virtual memory by dividing it into fixed-size blocks, reducing memory usage while eliminating fragmentation. Combining the latter with custom CUDA kernels optimized for H100's Tensor Cores, this reduces the penalty of this phase being compute-bound, meaning we are utilizing our compute resources as much as practically possible.
 
 #### Decode
 
+The decode phase represents the sequential token generation stage where the model produces output tokens one at a time. Unlike prefill's highly parallel operations, decode transforms efficient matrix-matrix operations into memory-bound matrix-vector operations which have lower occupancy on high-throughput tensor cores available to us on the H100. Unstructured sparsity does not favor the tensor core design, which are optimized specifically for dense cubic complexity operations that can be reduced to matrix multiplication.
+
+Decode being a memory-bound operation means it's performance is constrained by memory bandwidth rather than compute throughput. Each token generation requires loading complete model parameters from the H100's 2.0 TB/s HBM2e memory, making memory bandwidth the primary performance bottleneck rather than compute performance.
+
+vLLM's decode implementation involves four key stages:
+
+1. **Token generation through autoregressive sampling**: Matrix-vector (GEMV) operations for single requests, or "tall and skinny" GEMM operations for batched requests
+2. **KV cache expansion**: PagedAttention system appends new key-value pairs using non-contiguous virtual memory blocks to reduce fragmentation  
+3. **Attention computation**: Custom multi-head query attention kernels process growing context with optimized memory access patterns for paged KV caches
+4. **CUDA kernel optimization**: Specialized memory coalescing techniques and CUDA Graph optimization to minimize kernel launch overhead
+
 #### Output Processing
+
+Output processing represents the final stage of LLM inference, converting raw model outputs back into human-readable text. While often considered negligible, this CPU-bound phase can create significant bottlenecks in high-throughput scenarios, particularly when serving many concurrent requests or streaming responses.
+
+vLLM addresses this by optimizing detokenization: breaking it into smaller chunks to avoid blocking the event loop and ensuring streaming stays responsive. In addition, the engine applies low-level memory optimizations (such as freezing the process heap after initialization) to reduce allocation overhead more broadly across the runtime.
+
+In practice, vLLM’s output processing involves four key stages:
+
+1. **Token ID extraction**: Raw logits from model output are converted to discrete token IDs through sampling algorithms like top-k, top-p, or temperature-based selection
+2. **Detokenization**: Token IDs are converted back to text strings using the model's tokenizer, with vLLM performing this step for each generated token to enable streaming responses  
+3. **Text formatting and validation**: Output strings undergo post-processing including special token removal, whitespace normalization, and stop sequence detection
+4. **Response streaming**: In streaming mode, partial outputs are immediately sent to clients as `data: {...}` chunks, while non-streaming mode accumulates tokens until request completion
+
+While lightweight compared to GPU inference, these sequential CPU-bound operations can still underutilize GPU resources, especially during tokenization and detokenization. Recent proposals suggest asynchronous tri-process collaboration—separating tokenization, inference, and detokenization into concurrent pipelines—to further improve throughput and GPU utilization.
+
+## Benchmark Results
+
+Having established the theoretical framework, let's examine actual measured latencies from our vLLM benchmarks on H100 at batch size 1. The component distribution pie charts show averaged results across all tested prompt sizes: [10, 25, 50, 100, 200, 400] tokens, while the memory scaling plots reveal how memory requirements grow with context length across this range.
+
+### Qwen 2.5 7B Instruct
+
+![Component Distribution](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/01_component_distribution.png)
+
+![Optimization Opportunities](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/04_optimization_opportunities.png)
+
+![Memory Requirements](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/03_memory_requirements.png)
+
+### DeepSeek R1 Distill Qwen 7B  
+
+![Component Distribution](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/01_component_distribution.png)
+
+![Optimization Opportunities](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/04_optimization_opportunities.png)
+
+![Memory Requirements](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/03_memory_requirements.png)
+
+### GPT OSS 20B
+
+![Component Distribution](latency_data/gpt_oss_20b_run_20250904_175129/01_component_distribution.png)
+
+![Optimization Opportunities](latency_data/gpt_oss_20b_run_20250904_175129/04_optimization_opportunities.png)
+
+![Memory Requirements](latency_data/gpt_oss_20b_run_20250904_175129/03_memory_requirements.png)
+
+Despite architectural differences between the dense 7B models and sparse MoE 20B model with 3.6B active params, single-request latencies scale similarily.
+
+## Batch Size Impact on Performance
+
+While single-request latency provides insight into model efficiency, production deployments typically serve multiple concurrent requests through batching. Using the same H100 system, we analyzed how batch size affects performance across our three test models. However, larger batch sizes introduce significant tradeoffs between throughput and per-request latency.
+
+**Latency Penalty with Batching**: As batch size increases, per-request latency decreases dramatically but individual request latency suffers. For Qwen 2.5 7B, latency drops from 976ms at BS=1 to 126ms at BS=8, but each individual request now waits longer in the batch queue. This represents the classic throughput-latency tradeoff in LLM serving.
+
+![Qwen 2.5 7B Batch Efficiency](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/09_batch_efficiency_analysis.png)
+
+**Memory Scaling Challenges**: Batch size directly impacts memory requirements through KV cache multiplication. Each additional request in a batch requires its own KV cache allocation, leading to linear memory scaling. At BS=32, memory usage reaches 346GB for the dense 7B models, approaching H100's 80GB limit when considering model parameters plus KV caches.
+
+![DeepSeek R1 Distill Batch Efficiency](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/09_batch_efficiency_analysis.png)
+
+**Diminishing Returns**: Throughput gains from batching show diminishing returns beyond certain batch sizes. While BS=2 provides nearly 2x throughput improvement, scaling from BS=16 to BS=32 yields progressively smaller efficiency gains. This occurs because memory bandwidth becomes increasingly constrained as more requests compete for the same GPU resources.
+
+**Architecture-Specific Behavior**: The MoE model (GPT OSS 20B) shows different scaling characteristics due to its sparse activation patterns. With only 3.6B active parameters per forward pass, it achieves better memory efficiency and can potentially support larger batch sizes before hitting memory constraints, though this comes at the cost of increased routing overhead for expert selection.
+
+![GPT OSS 20B Batch Efficiency](latency_data/gpt_oss_20b_run_20250904_175129/09_batch_efficiency_analysis.png)
+
+## Future Directions on Latency Optimization Opportunities
+
+Understanding these latency breakdowns reveals optimization strategies beyond traditional hardware scaling. While techniques like quantization and efficient attention can reduce memory bandwidth overhead, a very promising approach challenges sequential token generation itself, which we will discuss in a future blog. This analysis establishes the performance baseline necessary for evaluating such techniques that systematically address the memory bandwidth constraints identified across our inference pipeline.
+
 
