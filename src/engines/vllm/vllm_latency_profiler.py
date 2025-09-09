@@ -113,6 +113,10 @@ class VLLMLatencyProfiler:
     
     def _calculate_optimal_memory_settings(self, prompt_sizes: List[int], max_tokens: int = 100) -> Dict[str, any]:
         """Calculate optimal GPU memory utilization and max_model_len to avoid OOM"""
+        return self._calculate_optimal_memory_settings_with_max_len(prompt_sizes, max_tokens, None)
+    
+    def _calculate_optimal_memory_settings_with_max_len(self, prompt_sizes: List[int], max_tokens: int = 100, target_max_model_len: int = None) -> Dict[str, any]:
+        """Calculate optimal GPU memory utilization with optional custom max_model_len"""
         # Clear any existing models to get accurate free memory
         self._clear_gpu_memory()
         
@@ -151,23 +155,29 @@ class VLLMLatencyProfiler:
         kv_cache_per_token = (2 * model_config['num_layers'] * model_config['num_kv_heads'] * 
                              model_config['head_dim'] * 2) / (1024**3)
         
-        if kv_cache_per_token > 0:
-            max_model_len_fit = int(available_for_kv / kv_cache_per_token)
+        if target_max_model_len is not None:
+            # Use the requested max_model_len (for 64K+ testing)
+            safe_max_model_len = target_max_model_len
+            self.logger.info(f"Using custom max_model_len: {safe_max_model_len:,} tokens")
         else:
-            max_model_len_fit = 8192  # Fallback
-        
-        # Use the minimum of: memory-based limit, model's max positions, and a reasonable maximum
-        reasonable_max = min(model_max_positions, 32768)  # Cap at 32K tokens
-        memory_constrained_max = min(max_model_len_fit, reasonable_max)
-        
-        # CRITICAL: Never exceed the model's inherent position embedding limit
-        # If our largest sequence would exceed the model's limit, we need to adjust prompt sizes
-        if total_seq_len > model_max_positions:
-            self.logger.warning(f"Requested sequence length {total_seq_len} exceeds model max {model_max_positions}")
-            safe_max_model_len = model_max_positions
-        else:
-            # Use model's max positions if memory allows, otherwise use memory constraint
-            safe_max_model_len = min(model_max_positions, memory_constrained_max)
+            # Original logic for automatic calculation
+            if kv_cache_per_token > 0:
+                max_model_len_fit = int(available_for_kv / kv_cache_per_token)
+            else:
+                max_model_len_fit = 8192  # Fallback
+            
+            # Use the minimum of: memory-based limit, model's max positions, and a reasonable maximum
+            reasonable_max = min(model_max_positions, 32768)  # Cap at 32K tokens
+            memory_constrained_max = min(max_model_len_fit, reasonable_max)
+            
+            # CRITICAL: Never exceed the model's inherent position embedding limit
+            # If our largest sequence would exceed the model's limit, we need to adjust prompt sizes
+            if total_seq_len > model_max_positions:
+                self.logger.warning(f"Requested sequence length {total_seq_len} exceeds model max {model_max_positions}")
+                safe_max_model_len = model_max_positions
+            else:
+                # Use model's max positions if memory allows, otherwise use memory constraint
+                safe_max_model_len = min(model_max_positions, memory_constrained_max)
         
         # Calculate required GPU utilization based on total memory
         required_memory_gb = param_size_gb + (kv_cache_per_token * safe_max_model_len) + activation_gb + overhead_gb
@@ -179,8 +189,14 @@ class VLLMLatencyProfiler:
         elif param_size_gb > 5:  # Medium models (5-20GB)
             required_gpu_util = min(0.7, required_gpu_util)  # Moderately conservative
         
+        # For very large max_model_len (64K+), use more conservative utilization
+        if safe_max_model_len >= 65536:
+            required_gpu_util = min(0.5, required_gpu_util)  # Very conservative for 64K+
+        elif safe_max_model_len >= 32768:
+            required_gpu_util = min(0.6, required_gpu_util)  # Conservative for 32K+
+        
         # Ensure minimum utilization
-        required_gpu_util = max(0.4, required_gpu_util)
+        required_gpu_util = max(0.3, required_gpu_util)  # Lower minimum for large sequences
         
         return {
             'gpu_memory_utilization': required_gpu_util,
@@ -607,8 +623,20 @@ class VLLMLatencyProfiler:
         
         # 2. Input validation - scales with input size
         def validate():
-            if len(tokens) > 4096:  # Example limit
-                raise ValueError("Input too long")
+            # Use the model's actual max_model_len instead of hardcoded limit
+            max_model_len = None
+            if hasattr(self, '_optimal_memory_settings'):
+                max_model_len = self._optimal_memory_settings['max_model_len']
+            elif hasattr(self, 'engine') and self.engine is not None:
+                try:
+                    max_model_len = getattr(self.engine.llm_engine.model_config, 'max_model_len', 32768)
+                except:
+                    max_model_len = 32768  # Default fallback
+            else:
+                max_model_len = 32768  # Default fallback
+            
+            if len(tokens) > max_model_len:
+                raise ValueError(f"Input too long: {len(tokens)} tokens exceeds model max_model_len {max_model_len}")
             # Validation time scales with number of tokens
             time.sleep(len(tokens) * 0.00001)  # 0.01ms per token
             return True
@@ -849,6 +877,13 @@ class VLLMLatencyProfiler:
             
             total_params = embed_params + attention_params + mlp_params + norm_params + output_head_params
             
+            # Log the detected configuration for debugging
+            self.logger.info(f"Model config loaded for {self.model_name}:")
+            self.logger.info(f"  Total parameters: {total_params:,}")
+            self.logger.info(f"  Layers: {num_layers}, Heads: {num_heads}, KV heads: {num_kv_heads}")
+            self.logger.info(f"  Hidden size: {hidden_size}, Head dim: {head_dim}")
+            self.logger.info(f"  Vocab size: {vocab_size}")
+            
             return {
                 'params': total_params,
                 'num_layers': num_layers,
@@ -860,7 +895,7 @@ class VLLMLatencyProfiler:
             }
             
         except Exception as e:
-            self.logger.warning(f"Could not load config from transformers: {e}. Trying vLLM engine config.")
+            self.logger.error(f"Could not load config from transformers: {e}. Trying vLLM engine config.")
             
             try:
                 # Fallback: Try to get config from vLLM engine if already loaded
@@ -904,16 +939,43 @@ class VLLMLatencyProfiler:
             except Exception as e2:
                 self.logger.warning(f"Could not extract config from vLLM engine: {e2}. Using fallback estimates.")
             
-            # Final fallback to reasonable defaults
-            return {
-                'params': 1e9,  # 1B default
-                'num_layers': 24,
-                'num_heads': 16,
-                'num_kv_heads': 16,  # Default to MHA if unknown
-                'head_dim': 64,
-                'hidden_size': 1024,
-                'vocab_size': 50000
-            }
+            # Final fallback to reasonable defaults based on model name
+            self.logger.error(f"CRITICAL: Using fallback config for {self.model_name}. Memory calculations may be inaccurate!")
+            
+            # Try to guess reasonable defaults based on model name
+            if "7b" in self.model_name.lower() or "7B" in self.model_name:
+                # 7B model defaults (like Qwen 2.5 7B)
+                return {
+                    'params': 7.6e9,  # 7.6B parameters
+                    'num_layers': 28,
+                    'num_heads': 28,
+                    'num_kv_heads': 4,  # GQA common for modern 7B models
+                    'head_dim': 128,
+                    'hidden_size': 3584,  # Common for 7B models
+                    'vocab_size': 152064
+                }
+            elif "20b" in self.model_name.lower() or "20B" in self.model_name:
+                # 20B MoE model defaults
+                return {
+                    'params': 21e9,  # 21B total parameters
+                    'num_layers': 24,
+                    'num_heads': 64,
+                    'num_kv_heads': 8,  # GQA for MoE
+                    'head_dim': 64,
+                    'hidden_size': 4096,
+                    'vocab_size': 50000
+                }
+            else:
+                # Generic fallback
+                return {
+                    'params': 7e9,  # Default to 7B
+                    'num_layers': 24,
+                    'num_heads': 16,
+                    'num_kv_heads': 16,  # Default to MHA if unknown
+                    'head_dim': 64,
+                    'hidden_size': 1024,
+                    'vocab_size': 50000
+                }
     
     def calculate_memory_requirements(self, seq_length: int, max_tokens: int = 100, max_model_len: int = None) -> Dict[str, float]:
         """Calculate dynamic memory requirements based on model and sequence parameters
@@ -953,11 +1015,29 @@ class VLLMLatencyProfiler:
                              model_config['num_kv_heads'] * model_config['head_dim'] * 
                              total_seq_len * 2) / 1e6  # 2 bytes for bfloat16
         
-        # Additional memory for activations and intermediate computations
-        # This scales with actual sequence length, not max_model_len
-        attention_scores_mb = (model_config['num_heads'] * total_seq_len * total_seq_len * 2) / 1e6
-        mlp_intermediate_mb = (total_seq_len * model_config['hidden_size'] * 4 * 2) / 1e6  # 4x expansion in MLP
-        activation_mb = attention_scores_mb + mlp_intermediate_mb
+        # Debug logging for KV cache calculation
+        self.logger.info(f"KV Cache calculation debug:")
+        self.logger.info(f"  Seq length: {seq_length}, Max tokens: {max_tokens}, Total: {total_seq_len}")
+        self.logger.info(f"  Layers: {model_config['num_layers']}, KV heads: {model_config['num_kv_heads']}")
+        self.logger.info(f"  Head dim: {model_config['head_dim']}")
+        self.logger.info(f"  Formula: 1 × {model_config['num_layers']} × 2 × {model_config['num_kv_heads']} × {model_config['head_dim']} × {total_seq_len} × 2 / 1e6")
+        self.logger.info(f"  KV cache actual: {kv_cache_mb_actual:.1f} MB")
+        
+        # Additional memory for activations and intermediate computations (INFERENCE ONLY)
+        # For inference, we only need memory for current layer activations, not training-style O(n²) attention storage
+        
+        # Current layer activations: input embeddings + intermediate MLP states + output projections
+        # These are much smaller for inference since we don't store gradients or full attention matrices
+        input_activation_mb = (total_seq_len * model_config['hidden_size'] * 2) / 1e6  # Input to current layer
+        mlp_intermediate_mb = (total_seq_len * model_config['hidden_size'] * 4 * 2) / 1e6  # 4x expansion in MLP (only current layer)
+        output_projection_mb = (total_seq_len * model_config['hidden_size'] * 2) / 1e6  # Output projection
+        
+        # Small buffer for attention computation intermediates (NOT full O(n²) storage)
+        # Flash attention uses block-wise computation, so memory is O(n) not O(n²)
+        attention_buffer_mb = (model_config['num_heads'] * total_seq_len * model_config['head_dim'] * 2) / 1e6
+        
+        # Total inference activation memory (much smaller than training)
+        activation_mb = input_activation_mb + mlp_intermediate_mb + output_projection_mb + attention_buffer_mb
         
         # Buffer and overhead (typically 15-20% of base memory)
         base_memory_mb = param_size_mb + kv_cache_mb_max + activation_mb
@@ -984,7 +1064,15 @@ class VLLMLatencyProfiler:
             'seq_length': seq_length,
             'max_tokens': max_tokens,
             'max_model_len': max_model_len,
-            'estimated_params': model_config['params']
+            'estimated_params': model_config['params'],
+            # Debug info for troubleshooting
+            'debug_model_config': {
+                'num_layers': model_config['num_layers'],
+                'num_heads': model_config['num_heads'], 
+                'num_kv_heads': model_config['num_kv_heads'],
+                'head_dim': model_config['head_dim'],
+                'hidden_size': model_config['hidden_size']
+            }
         }
     
     def _profile_memory_operations(self, seq_length: int = 100, max_tokens: int = 100) -> Dict[str, float]:
@@ -1153,10 +1241,14 @@ class VLLMLatencyProfiler:
         from transformers import AutoTokenizer
         temp_tokenizer = AutoTokenizer.from_pretrained(self.model_name)
         
+        # Load model once at the beginning (no reloading between tests)
+        if not self.is_model_loaded:
+            print("Loading model once for all prompt size tests...")
+            self._profile_model_loading()
+            print("Model loaded, starting prompt size profiling...")
+        
         for i, target_tokens in enumerate(sizes):
-            # Reload model for each test to ensure cold start
-            print(f"\nReloading model for prompt size: {target_tokens} tokens")
-            self.reload_model()
+            print(f"\nProfiling prompt size: {target_tokens} tokens (no model reload)")
             
             # Create prompt of target token size
             base_tokens = temp_tokenizer.encode(base_prompt)
@@ -1172,7 +1264,7 @@ class VLLMLatencyProfiler:
             
             # Verify actual token count
             actual_tokens = len(temp_tokenizer.encode(prompt))
-            print(f"Profiling prompt size: {target_tokens} target tokens ({actual_tokens} actual tokens, {len(prompt)} chars)")
+            print(f"Target: {target_tokens} tokens, Actual: {actual_tokens} tokens, Characters: {len(prompt)}")
             
             # For the first test, do a warm-up run to eliminate initialization overhead
             if i == 0:
@@ -1201,13 +1293,36 @@ class VLLMLatencyProfiler:
         os.makedirs(run_dir, exist_ok=True)
         
         # Prepare data for scaling analysis (excluding model loading since it doesn't scale with prompt size)
+        # Split into compute timing and memory latencies for each stage
         scaling_data = {
             'Prompt Size': prompt_sizes,
-            'Input Processing': [p.tokenization_time + p.validation_time + p.tensor_prep_time for p in profiles],
-            'Prefill Phase': [p.attention_computation_time + p.kv_cache_build_time for p in profiles],
-            'Decode Phase': [p.token_generation_time + p.kv_cache_reuse_time + p.sampling_time for p in profiles],
-            'Output Processing': [p.detokenization_time for p in profiles],
-            'Memory Operations': [p.gpu_alloc_time + p.pcie_transfer_time + p.memory_defrag_time for p in profiles],
+            # Compute timing for each stage (for stacked bar charts)
+            'Input Processing Compute': [p.tokenization_time + p.validation_time + p.tensor_prep_time for p in profiles],
+            'Prefill Phase Compute': [p.attention_computation_time + p.kv_cache_build_time for p in profiles],
+            'Decode Phase Compute': [p.token_generation_time + p.kv_cache_reuse_time + p.sampling_time for p in profiles],
+            'Output Processing Compute': [p.detokenization_time for p in profiles],
+            # Memory latencies distributed across stages (for stacked bar charts)
+            'Input Memory': [p.pcie_transfer_time * 0.1 for p in profiles],  # Small portion for input transfer
+            'Prefill Memory': [p.gpu_alloc_time * 0.6 + p.memory_defrag_time * 0.4 for p in profiles],  # Most GPU allocation during prefill
+            'Decode Memory': [p.gpu_alloc_time * 0.3 + p.cache_eviction_time for p in profiles],  # KV cache management
+            'Output Memory': [p.pcie_transfer_time * 0.9 for p in profiles],  # Output transfer back to CPU
+            # Combined timing for pie charts (compute + memory per stage)
+            'Input Processing': [
+                p.tokenization_time + p.validation_time + p.tensor_prep_time + p.pcie_transfer_time * 0.1 
+                for p in profiles
+            ],
+            'Prefill Phase': [
+                p.attention_computation_time + p.kv_cache_build_time + p.gpu_alloc_time * 0.6 + p.memory_defrag_time * 0.4 
+                for p in profiles
+            ],
+            'Decode Phase': [
+                p.token_generation_time + p.kv_cache_reuse_time + p.sampling_time + p.gpu_alloc_time * 0.3 + p.cache_eviction_time 
+                for p in profiles
+            ],
+            'Output Processing': [
+                p.detokenization_time + p.pcie_transfer_time * 0.9 
+                for p in profiles
+            ],
         }
         
         scaling_df = pd.DataFrame(scaling_data)
@@ -1240,10 +1355,11 @@ class VLLMLatencyProfiler:
         return scaling_df
     
     def _create_pie_chart(self, profiles: List[LatencyProfile], scaling_df: pd.DataFrame, run_dir: str):
-        """Create runtime component distribution pie chart (excluding model loading)"""
+        """Create runtime component distribution pie chart with memory included in each stage"""
         fig, ax = plt.subplots(figsize=(12, 8))
         
-        pie_components = ['Input Processing', 'Prefill Phase', 'Decode Phase', 'Output Processing', 'Memory Operations']
+        # Use combined components (compute + memory per stage)
+        pie_components = ['Input Processing', 'Prefill Phase', 'Decode Phase', 'Output Processing']
         pie_avg_times = [scaling_df[comp].mean() for comp in pie_components]
         colors = plt.cm.Set3(np.linspace(0, 1, len(pie_components)))
         
@@ -1252,14 +1368,35 @@ class VLLMLatencyProfiler:
                                          colors=colors, startangle=90,
                                          textprops={'fontsize': 11, 'fontweight': 'bold'})
         
-        # Set title
-        ax.set_title('Runtime Component Distribution\n(Model Loading Excluded)', 
+        # Set title with model name
+        model_display_name = self._get_clean_model_name().replace('_', ' ').title()
+        ax.set_title(f'{model_display_name}\nRuntime Component Distribution (Compute + Memory)', 
                     fontsize=16, fontweight='bold', pad=20)
         
-        # Create clean legend
-        legend_labels = [f'{comp}: {time:.1f}ms' for comp, time in zip(pie_components, pie_avg_times)]
-        ax.legend(wedges, legend_labels, title="Runtime Components", 
-                 loc="center left", bbox_to_anchor=(1, 0.5), fontsize=11)
+        # Create detailed legend showing compute and memory breakdown
+        legend_labels = []
+        for i, (comp, total_time) in enumerate(zip(pie_components, pie_avg_times)):
+            # Calculate compute and memory portions
+            if comp == 'Input Processing':
+                compute_comp = 'Input Processing Compute'
+                memory_comp = 'Input Memory'
+            elif comp == 'Prefill Phase':
+                compute_comp = 'Prefill Phase Compute'
+                memory_comp = 'Prefill Memory'
+            elif comp == 'Decode Phase':
+                compute_comp = 'Decode Phase Compute'
+                memory_comp = 'Decode Memory'
+            else:  # Output Processing
+                compute_comp = 'Output Processing Compute'
+                memory_comp = 'Output Memory'
+            
+            compute_time = scaling_df[compute_comp].mean()
+            memory_time = scaling_df[memory_comp].mean()
+            
+            legend_labels.append(f'{comp}: {total_time:.1f}ms (Compute: {compute_time:.1f}ms, Memory: {memory_time:.1f}ms)')
+        
+        ax.legend(wedges, legend_labels, title="Runtime Components (Total = Compute + Memory)", 
+                 loc="center left", bbox_to_anchor=(1, 0.5), fontsize=10)
         
         # Make percentage text white and bold for better visibility
         for autotext in autotexts:
@@ -1272,9 +1409,10 @@ class VLLMLatencyProfiler:
     
     def _create_scaling_comparison(self, scaling_df: pd.DataFrame, prompt_sizes: List[int], run_dir: str):
         """Create all components scaling comparison plot"""
-        fig, ax = plt.subplots(figsize=(12, 8))
+        fig, ax = plt.subplots(figsize=(14, 8))
         
-        components = ['Input Processing', 'Prefill Phase', 'Decode Phase', 'Output Processing', 'Memory Operations']
+        components = ['Input Processing', 'Prefill Phase', 'Decode Phase', 'Output Processing', 
+                     'Input Memory', 'Prefill Memory', 'Decode Memory', 'Output Memory']
         colors = plt.cm.Set3(np.linspace(0, 1, len(components)))
         
         for component, color in zip(components, colors):
@@ -1283,7 +1421,8 @@ class VLLMLatencyProfiler:
         
         ax.set_xlabel('Prompt Size (tokens)', fontsize=14)
         ax.set_ylabel('Latency (ms)', fontsize=14)
-        ax.set_title('Component Scaling with Prompt Size\n(Excludes Model Loading)', fontsize=16, fontweight='bold')
+        model_display_name = self._get_clean_model_name().replace('_', ' ').title()
+        ax.set_title(f'{model_display_name}\nComponent Scaling with Prompt Size', fontsize=16, fontweight='bold')
         ax.legend(fontsize=12)
         ax.grid(True, alpha=0.3)
         ax.set_yscale('log')
@@ -1311,7 +1450,8 @@ class VLLMLatencyProfiler:
         ax.plot(prompt_sizes, memory_data, marker='s', color='red', linewidth=4, markersize=8)
         ax.set_xlabel('Prompt Size (tokens)', fontsize=12)
         ax.set_ylabel('Memory Required (MB)', fontsize=12)
-        ax.set_title('Memory Requirements vs Prompt Size', fontsize=16, fontweight='bold')
+        model_display_name = self._get_clean_model_name().replace('_', ' ').title()
+        ax.set_title(f'{model_display_name}\nMemory Requirements vs Prompt Size', fontsize=16, fontweight='bold')
         ax.grid(True, alpha=0.3)
         
         # Add memory breakdown for largest prompt
@@ -1329,27 +1469,53 @@ class VLLMLatencyProfiler:
         plt.close()
     
     def _create_optimization_chart(self, scaling_df: pd.DataFrame, run_dir: str):
-        """Create optimization potential bar chart"""
-        fig, ax = plt.subplots(figsize=(12, 6))
+        """Create stacked bar chart showing compute timing + memory latencies"""
+        fig, ax = plt.subplots(figsize=(14, 8))
         
-        components = ['Input Processing', 'Prefill Phase', 'Decode Phase', 'Output Processing', 'Memory Operations']
-        avg_times = [scaling_df[comp].mean() for comp in components]
-        colors = plt.cm.Set3(np.linspace(0, 1, len(components)))
+        # Define compute and memory components for each stage
+        stages = ['Input Processing', 'Prefill Phase', 'Decode Phase', 'Output Processing']
+        compute_components = ['Input Processing Compute', 'Prefill Phase Compute', 'Decode Phase Compute', 'Output Processing Compute']
+        memory_components = ['Input Memory', 'Prefill Memory', 'Decode Memory', 'Output Memory']
         
-        bars = ax.bar(components, avg_times, color=colors, alpha=0.8)
+        # Get average times
+        compute_times = [scaling_df[comp].mean() for comp in compute_components]
+        memory_times = [scaling_df[comp].mean() for comp in memory_components]
+        
+        # Create stacked bars
+        x_pos = np.arange(len(stages))
+        width = 0.6
+        
+        # Base compute timing bars
+        compute_bars = ax.bar(x_pos, compute_times, width, 
+                             label='Compute Timing', color='steelblue', alpha=0.8)
+        
+        # Memory latency bars stacked on top
+        memory_bars = ax.bar(x_pos, memory_times, width, bottom=compute_times,
+                            label='Memory Latencies', color='coral', alpha=0.8)
+        
+        # Customization
+        ax.set_xlabel('Processing Stages', fontsize=12)
         ax.set_ylabel('Average Latency (ms)', fontsize=12)
-        ax.set_title('Optimization Opportunities (Average Latency by Component)', fontsize=16, fontweight='bold')
-        ax.tick_params(axis='x', rotation=45)
+        model_display_name = self._get_clean_model_name().replace('_', ' ').title()
+        ax.set_title(f'{model_display_name}\nCompute vs Memory Latencies by Stage', fontsize=16, fontweight='bold')
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(stages, rotation=0)
+        ax.legend(fontsize=12)
         ax.grid(True, alpha=0.3, axis='y')
         
-        # Add value labels on bars
-        for bar, time in zip(bars, avg_times):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height + height*0.01,
-                   f'{time:.2f}ms', ha='center', va='bottom', fontweight='bold')
+        # Add total time labels on top of bars
+        for i, (compute_bar, memory_bar, compute_time, memory_time) in enumerate(
+                zip(compute_bars, memory_bars, compute_times, memory_times)):
+            total_height = compute_time + memory_time
+            
+            # Total time label on top
+            ax.text(memory_bar.get_x() + memory_bar.get_width()/2., 
+                   total_height + total_height*0.01,
+                   f'{total_height:.1f}ms', ha='center', va='bottom', 
+                   fontweight='bold', fontsize=12)
         
         plt.tight_layout()
-        plt.savefig(os.path.join(run_dir, '04_optimization_opportunities.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(run_dir, '04_compute_vs_memory_breakdown.png'), dpi=300, bbox_inches='tight')
         plt.close()
     
     def _create_deep_profiling_plots(self, profiles: List[LatencyProfile], prompt_sizes: List[int], run_dir: str):
@@ -1858,8 +2024,8 @@ Recommendations:
 
     def run_comprehensive_analysis(self, base_prompt: str = "Explain machine learning concepts"):
         """Run comprehensive analysis across multiple prompt sizes"""
-        prompt_sizes = [10, 25, 50, 100, 200, 400]  # Token counts
-        max_tokens = 100
+        prompt_sizes = [2048, 4096, 8192, 16384]  # Standard sequence lengths from 2K to 16k
+        max_tokens = 4096
         
         print("Starting comprehensive vLLM latency analysis...")
         print(f"Base prompt: '{base_prompt}'")
@@ -1878,6 +2044,30 @@ Recommendations:
         print(f"Max model length: {memory_settings['max_model_len']:,} tokens")
         print(f"Estimated memory usage: {memory_settings['estimated_memory_gb']:.1f} GB")
         print(f"Available GPU memory: {memory_settings['available_memory_gb']:.1f} GB / {memory_settings['total_memory_gb']:.1f} GB")
+        
+        # Check if largest prompt size exceeds model's max length
+        max_prompt_size = max(prompt_sizes)
+        required_max_len = max_prompt_size + max_tokens
+        if required_max_len > memory_settings['max_model_len']:
+            print(f"INFO: Largest test ({max_prompt_size} + {max_tokens} = {required_max_len} tokens)")
+            print(f"      exceeds model default max_model_len ({memory_settings['max_model_len']} tokens)")
+            print(f"      Adjusting max_model_len to accommodate all test sizes...")
+            
+            # Calculate new max_model_len that fits all tests
+            new_max_model_len = required_max_len
+            
+            # Recalculate memory settings with the new max length
+            memory_settings = self._calculate_optimal_memory_settings_with_max_len(prompt_sizes, max_tokens, new_max_model_len)
+            print(f"      New max_model_len: {memory_settings['max_model_len']:,} tokens")
+            print(f"      Estimated memory usage: {memory_settings['estimated_memory_gb']:.1f} GB")
+            
+            # Check if we have enough memory
+            if memory_settings['estimated_memory_gb'] > memory_settings['available_memory_gb']:
+                print(f"WARNING: Required memory ({memory_settings['estimated_memory_gb']:.1f} GB) exceeds available ({memory_settings['available_memory_gb']:.1f} GB)")
+                print(f"         This may cause OOM errors. Consider reducing GPU utilization or prompt sizes.")
+            else:
+                print(f"      Memory check passed: {memory_settings['estimated_memory_gb']:.1f} GB <= {memory_settings['available_memory_gb']:.1f} GB")
+        
         print("=" * 50)
         
         # Store settings for use in model loading
@@ -1895,15 +2085,23 @@ Recommendations:
         print("=" * 50)
         
         # Calculate optimization-focused metrics (excluding model loading)
-        optimizable_components = ['Input Processing', 'Prefill Phase', 'Decode Phase', 'Output Processing', 'Memory Operations']
-        total_optimizable = sum(df[comp].mean() for comp in optimizable_components)
+        compute_components = ['Input Processing Compute', 'Prefill Phase Compute', 'Decode Phase Compute', 'Output Processing Compute']
+        memory_components = ['Input Memory', 'Prefill Memory', 'Decode Memory', 'Output Memory']
+        combined_components = ['Input Processing', 'Prefill Phase', 'Decode Phase', 'Output Processing']
+        all_components = compute_components + memory_components
         
-        print(f"Average optimizable latency: {total_optimizable:.2f}ms per request")
-        print(f"Memory scaling: {df['Memory Operations'].max() / df['Memory Operations'].min():.1f}x from smallest to largest prompt")
+        total_compute = sum(df[comp].mean() for comp in compute_components)
+        total_memory = sum(df[comp].mean() for comp in memory_components)
+        total_optimizable = total_compute + total_memory
+        
+        print(f"Average compute latency: {total_compute:.2f}ms per request")
+        print(f"Average memory latency: {total_memory:.2f}ms per request ({total_memory/total_optimizable*100:.1f}% of total)")
+        print(f"Total optimizable latency: {total_optimizable:.2f}ms per request")
+        print(f"Memory scaling: {df['Prefill Memory'].max() / df['Prefill Memory'].min():.1f}x from smallest to largest prompt")
         print(f"Prefill scaling: {df['Prefill Phase'].max() / df['Prefill Phase'].min():.1f}x with prompt size")
         
         # Find optimization opportunities
-        avg_times = df[optimizable_components].mean()
+        avg_times = df[all_components].mean()
         bottleneck = avg_times.idxmax()
         second_bottleneck = avg_times.drop(bottleneck).idxmax()
         

@@ -6,7 +6,21 @@ Large language model deployment has become a growing necessity for modern applic
 
 Latency directly correlates with user experience metrics and operational expenditure. However, the underlying factors contributing to inference latency form a complex, interdependent system. Engineering teams consistently face fundamental questions: Where do performance bottlenecks actually occur? Which optimization strategies deliver measurable improvements? How do hardware configurations impact real-world performance characteristics?
 
-Let's dive into the analysis.
+At Hathora, our experience with ultra-low latency gaming infrastructure and Elastic Metal platform positioned us to explore inference optimization challenges. The gaming industry's stringent latency requirements provided valuable insights into performance engineering that translate well to LLM serving.
+
+The inference landscape is populated with numerous providers implementing various strategies to optimize computational latency through custom GPU kernels, specialized hardware, and advanced inference frameworks. While these efforts have successfully reduced on-GPU processing times, there remains a notable gap in addressing network latency and comprehensive autoscaling across the entire inference stack.
+
+Our gaming infrastructure at Hathora already addresses many of these challenges through proven techniques: hosting servers in close proximity to end-users, routing traffic through a private backbone to minimize packet travel distance, and enabling rapid autoscaling that spins up resources in seconds to meet fluctuating demand. These capabilities translate directly to inference optimization challenges.
+
+Building on this foundation, we identified opportunities to minimize end-to-end inference latency by:
+
+- **Reducing network latency**: Leveraging our existing global edge infrastructure to deploy models closer to end-users, reducing round-trip times for inference requests
+- **Optimizing inference request latency**: Beyond computational improvements, implementing techniques like speculative decoding, parameter disaggregation, and strategic partnerships with custom chip providers  
+- **Enhancing operational flexibility**: Supporting custom model containers, multi-modal use cases, GPU-second billing, and rapid autoscaling with optimized cold starts
+
+To systematically address these optimization questions, we conducted comprehensive latency profiling across representative model architectures. Rather than relying on theoretical analysis alone, we measured actual performance characteristics to understand where bottlenecks occur in practice. This empirical approach helps identify which optimization strategies provide measurable improvements under real deployment conditions. 
+
+So, let's dive into the analysis of node-bound inference latencies.
 
 ## Experimental Configuration
 
@@ -56,23 +70,14 @@ These distinctions are crucial for understanding the memory characteristics of o
 
 Awesome! now let's dive into what this means for our chosen models.
 
-1. **Qwen 2.5 7B Instruct** - A dense 7.61B parameter model with 128K context length support. Uses Group Query Attention (GQA) with 28 query heads and 4 KV heads, plus rotary positional embeddings (RoPE) and YaRN for context extension across 28 layers. Uses ~10.8 GB for model parameters, with KV cache scaling linearly with prompt size. At our largest tested prompt of 400 tokens, the KV cache is 61.5 MB, so our total memory usage is ~10.9 GB. Note: Full 128K context would require additional ~7.0 GB for KV cache (using 28 layers, 4 KV heads, 128 head dimension, BF16).
+1. **Qwen 2.5 7B Instruct** - A dense 7.61B parameter model with 128K context length support. Uses Group Query Attention (GQA) with 28 query heads and 4 KV heads, plus rotary positional embeddings (RoPE) and YaRN for context extension across 28 layers. Uses ~10.8 GB for model parameters, with KV cache scaling linearly with prompt size. At our largest tested prompt of 16384 tokens, the KV cache is 939 MB, so our total memory usage is ~11.8 GB. Note: Full 128K context would require additional ~7.4 GB for KV cache (using 28 layers, 4 KV heads, 128 head dimension, BF16).
 
-![Memory Requirements Analysis](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/03_memory_requirements.png)
 
-![Optimization Opportunities Analysis](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/04_optimization_opportunities.png)
+2. **Deepseek R1 Distill Qwen 7B** - A dense 7.61B parameter model distilled from DeepSeek-R1 using 800K reasoning samples. Based on Qwen 2.5 architecture with GQA (28 query heads, 4 KV heads) and YaRN for context extension across 28 layers, but optimized for reasoning tasks. Uses ~10.8 GB for model parameters, with KV cache scaling linearly with prompt size. At our largest tested prompt of 16384 tokens, the KV cache is 939 MB, so our total memory usage is ~11.8 GB. Note: Full 128K context would require additional ~7.4 GB for KV cache (using 28 layers, 4 KV heads, 128 head dimension, BF16).
 
-2. **Deepseek R1 Distill Qwen 7B** - A dense 7.61B parameter model distilled from DeepSeek-R1 using 800K reasoning samples. Based on Qwen 2.5 architecture with GQA (28 query heads, 4 KV heads) and YaRN for context extension across 28 layers, but optimized for reasoning tasks. Uses ~10.8 GB for model parameters, with KV cache scaling linearly with prompt size. At our largest tested prompt of 400 tokens, the KV cache is 61.5 MB, so our total memory usage is ~10.9 GB. Note: Full 128K context would require additional ~7.0 GB for KV cache (using 28 layers, 4 KV heads, 128 head dimension, BF16).
 
-![Memory Requirements Analysis](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/03_memory_requirements.png)
+3. **GPT OSS 20B** - A mixture-of-experts (MoE) model with 21B total parameters but only 3.6B active parameters per forward pass, trained using quantization-aware training (QAT) to MXFP4 format. Uses GQA with 64 query heads and 8 KV heads, plus YaRN for 128K context extension across 24 layers. Uses ~10.6 GB for model parameters due to MXFP4 quantization (4.25 bits per parameter), with KV cache scaling linearly with prompt size. At our largest tested prompt of 16384 tokens, the KV cache is 805 MB, so our total memory usage is ~11.4 GB. Note: Full 128K context would require additional ~6.3 GB for KV cache (using 24 layers, 8 KV heads, 64 head dimension, BF16).
 
-![Optimization Opportunities Analysis](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/04_optimization_opportunities.png)
-
-3. **GPT OSS 20B** - A mixture-of-experts (MoE) model with 21B total parameters but only 3.6B active parameters per forward pass, trained using quantization-aware training (QAT) to MXFP4 format. Uses GQA with 64 query heads and 8 KV heads, plus YaRN for 128K context extension across 24 layers. Uses ~10.6 GB for model parameters due to MXFP4 quantization (4.25 bits per parameter), with KV cache scaling linearly with prompt size. At our largest tested prompt of 400 tokens, the KV cache is 49.2 MB, so our total memory usage is ~10.7 GB. Note: Full 128K context would require additional ~6.0 GB for KV cache (using 24 layers, 8 KV heads, 64 head dimension, BF16).
-
-![Memory Requirements Analysis](latency_data/gpt_oss_20b_run_20250904_175129/03_memory_requirements.png)
-
-![Optimization Opportunities Analysis](latency_data/gpt_oss_20b_run_20250904_175129/04_optimization_opportunities.png)
 
 Overall, these architectures demonstrate some differences in how LLM optimization has evolved overtime, going from dense transformers, to sparse MoE architectures, as well as using different attention techniques; all for the benefit of higher throughput and lower memory footprint. 
 
@@ -148,31 +153,33 @@ While lightweight compared to GPU inference, these sequential CPU-bound operatio
 
 ## Benchmark Results
 
-Having established the theoretical framework, let's examine actual measured latencies from our vLLM benchmarks on H100 at batch size 1. The component distribution pie charts show averaged results across all tested prompt sizes: [10, 25, 50, 100, 200, 400] tokens, while the memory scaling plots reveal how memory requirements grow with context length across this range.
+Having established the theoretical framework, let's examine actual measured latencies from our vLLM benchmarks on H100 at batch size 1. The component distribution pie charts show averaged results across all tested prompt sizes, [2048, 4096, 8192, 16384] tokens, and a generation length of 4096, while the memory scaling plots reveal how memory requirements grow with context length across this range.
+
+**Note on Memory Calculations**: During our analysis, we identified and corrected significant errors in our initial memory calculation implementation. The updated results below reflect accurate KV cache memory calculations (previously underestimated by ~15x) and corrected activation memory estimates for inference workloads (previously inflated due to training-specific calculations). This ensures our memory requirements and optimization insights are based on realistic production inference scenarios.
 
 ### Qwen 2.5 7B Instruct
 
-![Component Distribution](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/01_component_distribution.png)
+![Component Distribution](latency_data/Qwen2_5_7B_Instruct_run_20250909_155711/01_component_distribution.png)
 
-![Optimization Opportunities](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/04_optimization_opportunities.png)
+![Compute vs Memory Breakdown](latency_data/Qwen2_5_7B_Instruct_run_20250909_155711/04_compute_vs_memory_breakdown.png)
 
-![Memory Requirements](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/03_memory_requirements.png)
+![Memory Requirements](latency_data/Qwen2_5_7B_Instruct_run_20250909_155711/03_memory_requirements.png)
 
 ### DeepSeek R1 Distill Qwen 7B  
 
-![Component Distribution](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/01_component_distribution.png)
+![Component Distribution](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250909_161108/01_component_distribution.png)
 
-![Optimization Opportunities](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/04_optimization_opportunities.png)
+![Compute vs Memory Breakdown](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250909_161108/04_compute_vs_memory_breakdown.png)
 
-![Memory Requirements](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/03_memory_requirements.png)
+![Memory Requirements](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250909_161108/03_memory_requirements.png)
 
 ### GPT OSS 20B
 
-![Component Distribution](latency_data/gpt_oss_20b_run_20250904_175129/01_component_distribution.png)
+![Component Distribution](latency_data/gpt_oss_20b_run_20250909_160401/01_component_distribution.png)
 
-![Optimization Opportunities](latency_data/gpt_oss_20b_run_20250904_175129/04_optimization_opportunities.png)
+![Compute vs Memory Breakdown](latency_data/gpt_oss_20b_run_20250909_160401/04_compute_vs_memory_breakdown.png)
 
-![Memory Requirements](latency_data/gpt_oss_20b_run_20250904_175129/03_memory_requirements.png)
+![Memory Requirements](latency_data/gpt_oss_20b_run_20250909_160401/03_memory_requirements.png)
 
 Despite architectural differences between the dense 7B models and sparse MoE 20B model with 3.6B active params, single-request latencies scale similarily.
 
@@ -182,17 +189,17 @@ While single-request latency provides insight into model efficiency, production 
 
 **Latency Penalty with Batching**: As batch size increases, per-request latency decreases dramatically but individual request latency suffers. For Qwen 2.5 7B, latency drops from 976ms at BS=1 to 126ms at BS=8, but each individual request now waits longer in the batch queue. This represents the classic throughput-latency tradeoff in LLM serving.
 
-![Qwen 2.5 7B Batch Efficiency](latency_data/Qwen2_5_7B_Instruct_run_20250904_175620/09_batch_efficiency_analysis.png)
+![Qwen 2.5 7B Batch Efficiency](latency_data/Qwen2_5_7B_Instruct_run_20250909_155711/09_batch_efficiency_analysis.png)
 
-**Memory Scaling Challenges**: Batch size directly impacts memory requirements through KV cache multiplication. Each additional request in a batch requires its own KV cache allocation, leading to linear memory scaling. At BS=32, memory usage reaches 346GB for the dense 7B models, approaching H100's 80GB limit when considering model parameters plus KV caches.
+**Memory Scaling Challenges**: Batch size directly impacts memory requirements through KV cache multiplication. Each additional request in a batch requires its own KV cache allocation, leading to linear memory scaling. With corrected KV cache calculations, memory requirements scale more significantly than initially estimated - the H100's 80GB limit becomes a meaningful constraint at moderate batch sizes for longer sequences.
 
-![DeepSeek R1 Distill Batch Efficiency](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250904_174701/09_batch_efficiency_analysis.png)
+![DeepSeek R1 Distill Batch Efficiency](latency_data/DeepSeek_R1_Distill_Qwen_7B_run_20250909_161108/09_batch_efficiency_analysis.png)
 
 **Diminishing Returns**: Throughput gains from batching show diminishing returns beyond certain batch sizes. While BS=2 provides nearly 2x throughput improvement, scaling from BS=16 to BS=32 yields progressively smaller efficiency gains. This occurs because memory bandwidth becomes increasingly constrained as more requests compete for the same GPU resources.
 
 **Architecture-Specific Behavior**: The MoE model (GPT OSS 20B) shows different scaling characteristics due to its sparse activation patterns. With only 3.6B active parameters per forward pass, it achieves better memory efficiency and can potentially support larger batch sizes before hitting memory constraints, though this comes at the cost of increased routing overhead for expert selection.
 
-![GPT OSS 20B Batch Efficiency](latency_data/gpt_oss_20b_run_20250904_175129/09_batch_efficiency_analysis.png)
+![GPT OSS 20B Batch Efficiency](latency_data/gpt_oss_20b_run_20250909_160401/09_batch_efficiency_analysis.png)
 
 ## Future Directions on Latency Optimization Opportunities
 
