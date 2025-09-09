@@ -205,4 +205,6 @@ While single-request latency provides insight into model efficiency, production 
 
 Understanding these latency breakdowns reveals optimization strategies beyond traditional hardware scaling. While techniques like quantization and efficient attention can reduce memory bandwidth overhead, a very promising approach challenges sequential token generation itself, which we will discuss in a future blog. This analysis establishes the performance baseline necessary for evaluating such techniques that systematically address the memory bandwidth constraints identified across our inference pipeline.
 
+## What's Next For Us?
 
+We're interested in researching and documenting our journey in optimizing inference on our scalable cloud platform, so subscribe to get notified on how these optimizations play out for us!
