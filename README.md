@@ -45,3 +45,7 @@
 ```bash
 python3 run_vllm_profile.py --model "Qwen/Qwen2.5-7B-Instruct"
 ```
+
+## Blog Google Doc
+
+https://docs.google.com/document/d/1icRUmHbFIHP6TfN6J8f6UMyC2rZfG9WuMFx1K1weu58/edit?usp=sharing
